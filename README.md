@@ -302,6 +302,10 @@ basic表示free账号，spuer和heavy 为付费
 > ```
 >
 > 结果写入 `data/oidc_auth.json`，运行时 `cli_chat` 会优先复用，避免每次请求都重新 device flow。
+>
+> **导入/注册后自动转换**：Admin 添加账号（`/tokens/add`、全量保存、替换池）后，后台会自动跑 SSO→OIDC（与配额刷新并行）。配置项：
+> - `features.auto_oidc_on_import`（默认 `true`）
+> - `features.auto_oidc_concurrency`（默认 `2`）
 | `grok-4.20-0309-console` | 默认 | basic |
 | `grok-4.20-0309-reasoning-console` | 固定 reasoning | basic |
 | `grok-4.20-0309-non-reasoning-console` | 无 reasoning | basic |

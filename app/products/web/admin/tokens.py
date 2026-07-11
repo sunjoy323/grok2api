@@ -386,6 +386,9 @@ async def edit_token(
     )])
     await repo.delete_accounts([old_token])
 
+    # New SSO: convert to OIDC in background for cli-chat / grok-4.5.
+    _fire_and_forget(_convert_oidc_imported([new_token]))
+
     logger.info("admin token replaced: previous_token={} current_token={} pool={}", _mask(old_token), _mask(new_token), pool)
     return _json({"status": "success", "token": new_token, "pool": pool})
 
@@ -530,6 +533,89 @@ async def _refresh_imported(svc: "AccountRefreshService", tokens: list[str]) -> 
         return False
 
 
+def _oidc_convert_one(token: str) -> tuple[str, str | None]:
+    """Blocking SSO→OIDC convert for one token. Returns (status, error)."""
+    import time
+
+    from app.dataplane.reverse.protocol.xai_oidc import (
+        cache_put,
+        load_disk_cache,
+        save_disk_entry,
+        sso_key,
+        sso_to_oidc,
+    )
+    from app.platform.errors import UpstreamError
+
+    try:
+        # Skip if disk already has a fresh credential (from scripts or prior import).
+        disk = load_disk_cache()
+        existing = (disk.get("entries") or {}).get(sso_key(token))
+        if isinstance(existing, dict) and existing.get("access_token"):
+            exp = float(existing.get("expires_at") or 0)
+            if exp > time.time() + 120:
+                cache_put(token, existing)
+                return "skipped", None
+
+        cred = sso_to_oidc(token)
+        cache_put(token, cred)
+        save_disk_entry(token, cred)
+        return "ok", None
+    except UpstreamError as exc:
+        return "failed", str(exc)
+    except Exception as exc:  # noqa: BLE001
+        return "failed", f"{type(exc).__name__}: {exc}"
+
+async def _convert_oidc_imported(tokens: list[str]) -> None:
+    """After account import/register: auto SSO→OIDC (cli-chat / grok-4.5).
+
+    Same device-flow protocol as scripts/sso_to_oidc.py and grokcli-2api.
+    Runs in background with low concurrency to reduce rate_limited errors.
+    """
+    from app.platform.runtime.batch import run_batch
+
+    unique = list(dict.fromkeys(t for t in tokens if t))
+    if not unique:
+        return
+
+    # Optional kill-switch: features.auto_oidc_on_import = false
+    if not get_config().get_bool("features.auto_oidc_on_import", True):
+        logger.info("admin import auto oidc skipped: disabled by config")
+        return
+
+    # Keep concurrency modest — full-batch earlier hit rate_limited at workers=3.
+    concurrency = max(1, min(get_config().get_int("features.auto_oidc_concurrency", 2), 4))
+    ok_c = skip_c = fail_c = 0
+
+    async def _one(token: str) -> None:
+        nonlocal ok_c, skip_c, fail_c
+        status, err = await asyncio.to_thread(_oidc_convert_one, token)
+        if status == "ok":
+            ok_c += 1
+        elif status == "skipped":
+            skip_c += 1
+        else:
+            fail_c += 1
+            logger.warning(
+                "admin import auto oidc failed: token={} error={}",
+                _mask(token),
+                (err or "")[:200],
+            )
+
+    logger.info(
+        "admin import auto oidc started: token_count={} concurrency={}",
+        len(unique),
+        concurrency,
+    )
+    await run_batch(unique, _one, concurrency=concurrency)
+    logger.info(
+        "admin import auto oidc completed: token_count={} ok={} skipped={} failed={}",
+        len(unique),
+        ok_c,
+        skip_c,
+        fail_c,
+    )
+
+
 async def _refresh_then_auto_nsfw(
     svc: "AccountRefreshService",
     repo: "AccountRepository",
@@ -538,7 +624,13 @@ async def _refresh_then_auto_nsfw(
     auto_nsfw_enabled: bool,
 ) -> None:
     unique_tokens = list(dict.fromkeys(tokens))
-    if await _refresh_imported(svc, unique_tokens):
+    # Quota refresh + OIDC convert run in parallel after import/register.
+    refresh_ok, _ = await asyncio.gather(
+        _refresh_imported(svc, unique_tokens),
+        _convert_oidc_imported(unique_tokens),
+        return_exceptions=False,
+    )
+    if refresh_ok:
         _schedule_auto_nsfw(repo, unique_tokens, enabled=auto_nsfw_enabled)
 
 

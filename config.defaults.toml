@@ -38,6 +38,10 @@ thinking_summary = false
 dynamic_statsig = true
 # 是否允许生成 NSFW 图片
 enable_nsfw = true
+# 账号导入/注册后是否自动 SSO→OIDC（cli-chat / grok-4.5，device flow）
+auto_oidc_on_import = true
+# 自动 OIDC 转换并发（1–4，过大易触发 rate_limited）
+auto_oidc_concurrency = 2
 # 搜索信源始终以 search_sources 结构化字段输出（无需此开关）。
 # 此选项仅控制是否同时在响应正文末尾追加 ## Sources 纯文本段落（兼容文本解析客户端）。
 show_search_sources = false
