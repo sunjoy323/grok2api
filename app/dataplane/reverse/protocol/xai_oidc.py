@@ -35,10 +35,100 @@ _OIDC_CACHE: dict[str, dict[str, Any]] = {}
 _REFRESH_SKEW_S = 120.0
 _DISK_LOCK = threading.Lock()
 _DISK_LOADED = False
+_PROXY_LOGGED = False
+
 
 def _normalize_sso(sso_token: str) -> str:
     tok = sso_token[4:] if sso_token.startswith("sso=") else sso_token
     return tok.strip()
+
+
+def _env_proxy_url() -> str:
+    """Prefer process env (scripts/docker exec -e HTTP_PROXY=...)."""
+    for key in (
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "ALL_PROXY",
+        "https_proxy",
+        "http_proxy",
+        "all_proxy",
+    ):
+        val = (os.getenv(key) or "").strip()
+        if val:
+            return val
+    return ""
+
+
+def _config_proxy_url() -> str:
+    """Read app proxy.egress (same source as chat traffic)."""
+    try:
+        from app.platform.config.snapshot import get_config
+
+        cfg = get_config()
+        mode = (cfg.get_str("proxy.egress.mode", "direct") or "direct").strip().lower()
+        if mode in ("", "direct"):
+            return ""
+        url = (cfg.get_str("proxy.egress.proxy_url", "") or "").strip()
+        if url:
+            return url
+        if mode == "proxy_pool":
+            pool = cfg.get_list("proxy.egress.proxy_pool", []) or []
+            for item in pool:
+                if isinstance(item, str) and item.strip():
+                    return item.strip()
+    except Exception:
+        return ""
+    return ""
+
+
+def _egress_proxy_url() -> str:
+    """Resolve proxy for OIDC device-flow / token HTTP.
+
+    Order: env → config proxy.egress → direct.
+    """
+    global _PROXY_LOGGED
+    proxy = _env_proxy_url() or _config_proxy_url()
+    if proxy and not _PROXY_LOGGED:
+        _PROXY_LOGGED = True
+        logger.info("oidc transport using proxy: {}", proxy.split("@")[-1])
+    return proxy
+
+
+def _urlopen(req: urllib.request.Request, *, timeout: float = 20.0):
+    """urllib open with optional egress proxy (blocking)."""
+    proxy = _egress_proxy_url()
+    if not proxy:
+        return urllib.request.urlopen(req, timeout=timeout)
+    handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+    opener = urllib.request.build_opener(handler)
+    return opener.open(req, timeout=timeout)
+
+
+def _apply_proxy_to_curl_session(session: Any) -> dict[str, Any]:
+    """Attach egress proxy onto a curl_cffi Session; return extra request kwargs."""
+    extra: dict[str, Any] = {}
+    proxy = _egress_proxy_url()
+    if not proxy:
+        return extra
+    try:
+        from app.dataplane.proxy.adapters.session import normalize_proxy_url
+
+        proxy = normalize_proxy_url(proxy)
+    except Exception:
+        pass
+    scheme = proxy.split("://", 1)[0].lower() if "://" in proxy else ""
+    if scheme.startswith("socks"):
+        session.proxies = {"all": proxy}
+    else:
+        session.proxies = {"http": proxy, "https": proxy}
+    try:
+        from app.platform.config.snapshot import get_config
+
+        if get_config().get_bool("proxy.egress.skip_ssl_verify", False):
+            extra["verify"] = False
+    except Exception:
+        pass
+    return extra
 
 
 # Default on-disk cache written by scripts/sso_to_oidc.py
@@ -104,7 +194,7 @@ def _request_device_code() -> dict[str, Any]:
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with _urlopen(req, timeout=20) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", "replace")[:300]
@@ -135,7 +225,7 @@ def _poll_token(device_code: str, interval: int, expires_in: int) -> dict[str, A
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
+            with _urlopen(req, timeout=20) as resp:
                 return json.loads(resp.read())
         except urllib.error.HTTPError as exc:
             try:
@@ -171,7 +261,7 @@ def _refresh_token(refresh_token: str) -> dict[str, Any]:
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with _urlopen(req, timeout=20) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", "replace")[:300]
@@ -188,10 +278,13 @@ def _sso_device_approve(sso_token: str, device: dict[str, Any]) -> None:
 
     sso = _normalize_sso(sso_token)
     session = crequests.Session()
+    req_extra = _apply_proxy_to_curl_session(session)
     session.cookies.set("sso", sso, domain=".x.ai")
 
     try:
-        probe = session.get("https://accounts.x.ai/", impersonate="chrome", timeout=20)
+        probe = session.get(
+            "https://accounts.x.ai/", impersonate="chrome", timeout=20, **req_extra
+        )
     except Exception as exc:
         raise UpstreamError(f"OIDC SSO probe failed: {exc}", status=502) from exc
     if "sign-in" in (probe.url or "") or "sign-up" in (probe.url or ""):
@@ -203,7 +296,7 @@ def _sso_device_approve(sso_token: str, device: dict[str, Any]) -> None:
         raise UpstreamError("OIDC device payload incomplete", status=502)
 
     try:
-        session.get(verify_uri, impersonate="chrome", timeout=20)
+        session.get(verify_uri, impersonate="chrome", timeout=20, **req_extra)
         verify = session.post(
             f"{OIDC_ISSUER}/oauth2/device/verify",
             data={"user_code": user_code},
@@ -211,6 +304,7 @@ def _sso_device_approve(sso_token: str, device: dict[str, Any]) -> None:
             impersonate="chrome",
             timeout=20,
             allow_redirects=True,
+            **req_extra,
         )
         if "consent" not in (verify.url or ""):
             raise UpstreamError(
@@ -229,6 +323,7 @@ def _sso_device_approve(sso_token: str, device: dict[str, Any]) -> None:
             impersonate="chrome",
             timeout=20,
             allow_redirects=True,
+            **req_extra,
         )
         if "done" not in (approve.url or ""):
             raise UpstreamError(
