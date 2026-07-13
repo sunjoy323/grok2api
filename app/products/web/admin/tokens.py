@@ -115,9 +115,9 @@ class SaveTokensRequest(RootModel[dict[str, list[str | TokenImportItem]]]):
 # ---------------------------------------------------------------------------
 
 def _quota_brief(q: dict) -> dict:
-    """Extract {auto, fast, expert, heavy, console} with only remaining/total from stored quota dict."""
+    """Extract mode quotas with only remaining/total from stored quota dict."""
     out = {}
-    for mode in ("auto", "fast", "expert", "heavy", "console"):
+    for mode in ("auto", "fast", "expert", "heavy", "console", "cli"):
         v = q.get(mode)
         if isinstance(v, dict):
             out[mode] = {

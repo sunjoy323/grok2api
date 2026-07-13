@@ -167,6 +167,8 @@
     "statFast": "Fast-Guthaben",
     "statExpert": "Expert-Guthaben",
     "statHeavy": "Heavy-Guthaben",
+    "statConsole": "Console-Guthaben",
+    "statCli": "Grok 4.5-Guthaben",
     "filterStatusLabel": "Status",
     "filterNsfwLabel": "NSFW",
     "filterTypeLabel": "Typ",
@@ -294,6 +296,7 @@
       "heavy": "Heavy"
     },
     "mode": {
+      "cli": "Grok 4.5",
       "auto": "Auto",
       "fast": "Fast",
       "expert": "Expert",

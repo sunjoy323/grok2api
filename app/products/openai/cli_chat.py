@@ -51,11 +51,13 @@ def _log_task_exception(task: "asyncio.Task") -> None:
 
 async def _quota_sync(token: str, mode_id: int) -> None:
     try:
-        if current_strategy() != "quota" and mode_id != 5:
-            return
         svc = get_refresh_service()
-        if svc:
+        if not svc:
+            return
+        if current_strategy() == "quota" or mode_id == 5:
             await svc.refresh_call_async(token, mode_id)
+        # Always refresh CLI / grok-4.5 billing credits after a successful call.
+        await svc.refresh_cli_async(token)
     except Exception as exc:
         logger.warning(
             "cli quota sync failed: token={}... mode_id={} error={}",

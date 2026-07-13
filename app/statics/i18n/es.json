@@ -167,6 +167,8 @@
     "statFast": "Saldo Fast",
     "statExpert": "Saldo Expert",
     "statHeavy": "Saldo Heavy",
+    "statConsole": "Saldo Console",
+    "statCli": "Saldo Grok 4.5",
     "filterStatusLabel": "Estado",
     "filterNsfwLabel": "NSFW",
     "filterTypeLabel": "Tipo",
@@ -294,6 +296,7 @@
       "heavy": "Heavy"
     },
     "mode": {
+      "cli": "Grok 4.5",
       "auto": "Auto",
       "fast": "Fast",
       "expert": "Expert",

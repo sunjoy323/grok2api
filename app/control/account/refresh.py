@@ -52,6 +52,7 @@ _MODE_KEYS = {
     3: "quota_heavy",
     4: "quota_grok_4_3",
     5: "quota_console",  # console.x.ai 独立配额
+    # quota_cli is not a mode_id — stored separately via billing API
 }
 
 
@@ -288,10 +289,31 @@ class AccountRefreshService:
 
         # API call completely failed — no real data available.
         if windows is None:
+            # Still try CLI billing (independent endpoint / OIDC).
+            cli_only = await self._fetch_cli_quota(record.token)
+            if cli_only is not None:
+                from .commands import AccountPatch
+
+                await self._repo.patch_accounts(
+                    [
+                        AccountPatch(
+                            token=record.token,
+                            quota_cli=cli_only.to_dict(),
+                            last_sync_at=now_ms(),
+                            usage_sync_delta=1,
+                        )
+                    ]
+                )
+                if not apply_fallback:
+                    return RefreshResult(checked=1, refreshed=1, failed=0)
             if not apply_fallback:
                 return RefreshResult(checked=1, failed=1)
             # Scheduled/import path: apply conservative fallback.
-            return await self._apply_fallback(record)
+            result = await self._apply_fallback(record)
+            if cli_only is not None:
+                result.refreshed = max(result.refreshed, 1)
+                result.failed = 0
+            return result
 
         # We got at least a response — apply real data per mode.
         qs = record.quota_set()
@@ -337,6 +359,13 @@ class AccountRefreshService:
                         source=QuotaSource.DEFAULT,
                     ).to_dict()
 
+        # Best-effort CLI / grok-4.5 billing credits (OIDC → /v1/billing).
+        # Independent of grok.com rate-limits; may succeed even when other modes fail.
+        cli_window = await self._fetch_cli_quota(record.token)
+        if cli_window is not None:
+            patches["quota_cli"] = cli_window.to_dict()
+            refreshed = True
+
         if not patches:
             return RefreshResult(checked=1, failed=0 if refreshed else 1)
 
@@ -370,6 +399,33 @@ class AccountRefreshService:
             failed=0 if refreshed else 1,
             recovered=1 if (was_cooling and refreshed) else 0,
         )
+
+    async def _fetch_cli_quota(self, token: str) -> QuotaWindow | None:
+        """Fetch Grok CLI monthly credits; never raise (soft-fail)."""
+        try:
+            from app.dataplane.reverse.protocol.xai_cli_billing import fetch_cli_quota
+
+            win = await fetch_cli_quota(token)
+            return win if isinstance(win, QuotaWindow) else None
+        except Exception as exc:
+            logger.debug(
+                "cli quota refresh skipped: token={}... error={}",
+                token[:10],
+                exc,
+            )
+            return None
+
+    async def refresh_cli_async(self, token: str) -> bool:
+        """Fire-and-forget friendly: refresh only Grok CLI / grok-4.5 credits."""
+        win = await self._fetch_cli_quota(token)
+        if win is None:
+            return False
+        from .commands import AccountPatch
+
+        await self._repo.patch_accounts(
+            [AccountPatch(token=token, quota_cli=win.to_dict(), last_sync_at=now_ms())]
+        )
+        return True
 
     async def _apply_fallback(self, record: AccountRecord) -> RefreshResult:
         """Conservative fallback when API is unreachable (scheduled/import path only)."""

@@ -167,6 +167,8 @@
     "statFast": "Fast 残高",
     "statExpert": "Expert 残高",
     "statHeavy": "Heavy 残高",
+    "statConsole": "Console 残高",
+    "statCli": "Grok 4.5 残高",
     "filterStatusLabel": "状態",
     "filterNsfwLabel": "NSFW",
     "filterTypeLabel": "タイプ",
@@ -294,6 +296,7 @@
       "heavy": "Heavy"
     },
     "mode": {
+      "cli": "Grok 4.5",
       "auto": "Auto",
       "fast": "Fast",
       "expert": "Expert",

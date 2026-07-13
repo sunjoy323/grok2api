@@ -168,6 +168,8 @@
     "statFast": "Fast Balance",
     "statExpert": "Expert Balance",
     "statHeavy": "Heavy Balance",
+    "statConsole": "Console Balance",
+    "statCli": "Grok 4.5 Balance",
     "filterStatusLabel": "Status",
     "filterNsfwLabel": "NSFW",
     "filterTypeLabel": "Type",
@@ -297,6 +299,7 @@
       "heavy": "Heavy"
     },
     "mode": {
+      "cli": "Grok 4.5",
       "auto": "Auto",
       "fast": "Fast",
       "expert": "Expert",

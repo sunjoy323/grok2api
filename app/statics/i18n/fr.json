@@ -167,6 +167,8 @@
     "statFast": "Solde Fast",
     "statExpert": "Solde Expert",
     "statHeavy": "Solde Heavy",
+    "statConsole": "Solde Console",
+    "statCli": "Solde Grok 4.5",
     "filterStatusLabel": "Statut",
     "filterNsfwLabel": "NSFW",
     "filterTypeLabel": "Type",
@@ -294,6 +296,7 @@
       "heavy": "Heavy"
     },
     "mode": {
+      "cli": "Grok 4.5",
       "auto": "Auto",
       "fast": "Fast",
       "expert": "Expert",

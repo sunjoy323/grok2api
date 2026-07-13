@@ -81,6 +81,9 @@ class AccountQuotaSet:
     heavy: QuotaWindow | None = None  # heavy-pool accounts only
     grok_4_3: QuotaWindow | None = None  # super/heavy accounts only
     console: QuotaWindow | None = None  # basic pool console models (console.x.ai)
+    # Grok CLI / grok-4.5 monthly credits (cli-chat-proxy billing). Display + refresh only;
+    # not used as a hot-path selection mode_id.
+    cli: QuotaWindow | None = None
 
     def get(self, mode_id: int) -> QuotaWindow | None:
         """Return the quota window for *mode_id* (0=auto, 1=fast, 2=expert, 3=heavy, 4=grok_4_3, 5=console)."""
@@ -125,6 +128,8 @@ class AccountQuotaSet:
             d["grok_4_3"] = self.grok_4_3.to_dict()
         if self.console is not None:
             d["console"] = self.console.to_dict()
+        if self.cli is not None:
+            d["cli"] = self.cli.to_dict()
         return d
 
     @classmethod
@@ -132,6 +137,7 @@ class AccountQuotaSet:
         heavy_d = d.get("heavy")
         grok_4_3_d = d.get("grok_4_3")
         console_d = d.get("console")
+        cli_d = d.get("cli")
         return cls(
             auto=QuotaWindow.from_dict(d.get("auto", {})),
             fast=QuotaWindow.from_dict(d.get("fast", {})),
@@ -139,6 +145,7 @@ class AccountQuotaSet:
             heavy=QuotaWindow.from_dict(heavy_d) if heavy_d else None,
             grok_4_3=QuotaWindow.from_dict(grok_4_3_d) if grok_4_3_d else None,
             console=QuotaWindow.from_dict(console_d) if console_d else None,
+            cli=QuotaWindow.from_dict(cli_d) if cli_d else None,
         )
 
 

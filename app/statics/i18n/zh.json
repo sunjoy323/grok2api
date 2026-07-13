@@ -168,6 +168,8 @@
     "statFast": "Fast 余额",
     "statExpert": "Expert 余额",
     "statHeavy": "Heavy 余额",
+    "statConsole": "Console 余额",
+    "statCli": "Grok 4.5 余额",
     "filterStatusLabel": "状态",
     "filterNsfwLabel": "NSFW",
     "filterTypeLabel": "类型",
@@ -297,6 +299,7 @@
       "heavy": "Heavy"
     },
     "mode": {
+      "cli": "Grok 4.5",
       "auto": "Auto",
       "fast": "Fast",
       "expert": "Expert",
