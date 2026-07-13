@@ -43,7 +43,19 @@ services:
 
   # ── grok2api ──────────────────────────────────────────────────────────────
   grok2api:
-    image: ghcr.io/jiujiu532/grok2api:latest
+    # 使用本地源码构建（含 Grok 4.5 / SSO→OIDC 等能力）
+    # 代理：./scripts/docker-compose-with-proxy.sh build|up ...
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        HTTP_PROXY: ${BUILD_HTTP_PROXY:-}
+        HTTPS_PROXY: ${BUILD_HTTPS_PROXY:-}
+        http_proxy: ${BUILD_HTTP_PROXY:-}
+        https_proxy: ${BUILD_HTTPS_PROXY:-}
+        NO_PROXY: ${BUILD_NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
+        no_proxy: ${BUILD_NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
+    image: grok2api:local
     container_name: grok2api
     restart: unless-stopped
     ports:
