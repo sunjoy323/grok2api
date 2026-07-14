@@ -85,12 +85,17 @@ class AccountDirectory:
         *,
         exclude_tokens: list[str] | None = None,
         prefer_tags: list[str] | None = None,
+        prefer_tokens: list[str] | None = None,
         now_s_override: int | None = None,
     ) -> AccountLease | None:
         """Select and reserve the best available account slot.
 
         ``pool_candidates`` is tried in order; the first pool with an available
         account wins. A plain ``int`` is accepted and wrapped into a tuple.
+
+        *prefer_tokens* is a soft preference (e.g. OIDC-warm accounts for CLI).
+        When none of the preferred slots are free, selection falls back to the
+        full candidate pool.
 
         Returns an AccountLease, or None if no account is available.
         """
@@ -112,7 +117,7 @@ class AccountDirectory:
             if idxs:
                 exclude_idxs = frozenset(idxs)
 
-        # Resolve tag preference set.
+        # Resolve soft preference set (tags ∪ tokens).
         prefer_tag_idxs: set[int] | None = None
         if prefer_tags:
             sets = [
@@ -120,6 +125,16 @@ class AccountDirectory:
             ]
             if sets:
                 prefer_tag_idxs = set().union(*sets)
+        if prefer_tokens:
+            token_idxs = {
+                table.idx_by_token[t]
+                for t in prefer_tokens
+                if t in table.idx_by_token
+            }
+            if token_idxs:
+                prefer_tag_idxs = (
+                    (prefer_tag_idxs | token_idxs) if prefer_tag_idxs else token_idxs
+                )
 
         async with self._lock:
             idx: int | None = None

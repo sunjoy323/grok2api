@@ -296,6 +296,7 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
 
         else:
             # reasoning_effort=None → config default; "none" → off; otherwise → on.
+            # CLI models also receive the raw effort string for low/medium/high.
             if req.reasoning_effort is None:
                 emit_think: bool | None = None
             else:
@@ -305,6 +306,7 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
                 messages=messages,
                 stream=is_stream,
                 emit_think=emit_think,
+                reasoning_effort=req.reasoning_effort,
                 tools=req.tools,
                 tool_choice=req.tool_choice,
                 temperature=req.temperature or 0.8,

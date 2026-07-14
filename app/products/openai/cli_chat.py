@@ -8,6 +8,7 @@ https://github.com/HM2899/grokcli-2api
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, AsyncGenerator
 
 import orjson
@@ -23,7 +24,11 @@ from app.dataplane.reverse.protocol.xai_cli_chat import (
     build_cli_payload,
     stream_cli_chat,
 )
-from app.dataplane.reverse.protocol.xai_oidc import resolve_oidc_access_token
+from app.dataplane.reverse.protocol.xai_oidc import (
+    any_warm_oidc,
+    list_warm_sso_tokens,
+    resolve_oidc_access_token,
+)
 from app.platform.config.snapshot import get_config
 from app.platform.errors import RateLimitError, UpstreamError
 from app.platform.logging.logger import logger
@@ -41,6 +46,16 @@ from ._format import (
     make_tool_call_done_chunk,
     make_tool_call_response,
 )
+
+# Map OpenAI-style effort aliases to values accepted by cli-chat-proxy.
+_CLI_EFFORT_ALIASES = {
+    "none": None,
+    "minimal": "low",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "high",
+}
 
 
 def _log_task_exception(task: "asyncio.Task") -> None:
@@ -79,15 +94,127 @@ async def _fail_sync(token: str, mode_id: int, exc: BaseException | None = None)
         )
 
 
-def _reasoning_effort(emit_think: bool | None) -> str | None:
+def _reasoning_effort(
+    emit_think: bool | None,
+    reasoning_effort: str | None,
+    *,
+    default_effort: str,
+) -> str | None:
+    """Resolve CLI ``reasoning_effort`` for the upstream payload.
+
+    Priority:
+      1. explicit *reasoning_effort* from the client
+      2. *emit_think* False → disabled
+      3. config default (``chat.cli_reasoning_effort``, default ``medium``)
+    """
+    if reasoning_effort is not None:
+        key = str(reasoning_effort).strip().lower()
+        if key in _CLI_EFFORT_ALIASES:
+            return _CLI_EFFORT_ALIASES[key]
     if emit_think is False:
         return None
-    return "high"  # grok-4.5 defaults to high effort
+    key = (default_effort or "medium").strip().lower()
+    return _CLI_EFFORT_ALIASES.get(key, "medium")
 
 
-def _resolve_access_token(sso_token: str) -> str:
-    # Device-flow conversion is blocking (HTTP). Offload to a worker thread.
-    return resolve_oidc_access_token(sso_token)
+def _resolve_access_token(sso_token: str, *, allow_convert: bool) -> str:
+    # schedule_repair=True is the only enqueue path (no double-schedule in caller).
+    return resolve_oidc_access_token(
+        sso_token,
+        allow_convert=allow_convert,
+        schedule_repair=True,
+    )
+
+
+def _cli_max_retries(cfg) -> int:
+    """CLI needs more account swaps: many pool tokens lack fresh OIDC."""
+    base = selection_max_retries()
+    cli = cfg.get_int("chat.cli_account_retries", 8)
+    return max(base, max(0, cli))
+
+
+def _is_oidc_deferred(exc: BaseException | None) -> bool:
+    """True when failure is a deferred OIDC warm-up miss (not bad SSO)."""
+    if not isinstance(exc, UpstreamError):
+        return False
+    body = str((exc.details or {}).get("body") or "")
+    msg = str(exc.message or exc)
+    return "oidc_unavailable" in body or "oidc_unavailable" in msg
+
+
+def _feedback_for_cli_error(exc: BaseException | None) -> FeedbackKind:
+    """Map CLI failures to account feedback without expiring on OIDC warm-up misses."""
+    if _is_oidc_deferred(exc):
+        return FeedbackKind.SERVER_ERROR
+    return feedback_kind_for_error(exc)
+
+
+def _prefer_warm_tokens() -> list[str] | None:
+    """O(warm) prefer list from reverse SSO map — no full-pool scan."""
+    try:
+        warm = list_warm_sso_tokens()
+        return warm or None
+    except Exception:
+        return None
+
+
+def _should_hot_convert(
+    *,
+    last_resort: bool,
+    attempt: int,
+    max_retries: int,
+) -> bool:
+    """Only block on device-flow when pool has no warm OIDC at all.
+
+    If any account already has a warm token, keep swapping (background repair
+    will fill the rest) instead of paying ~10s on the last attempt.
+    """
+    if not last_resort or attempt < max_retries:
+        return False
+    try:
+        return not any_warm_oidc()
+    except Exception:
+        return True
+
+
+async def _release_and_feedback(
+    directory,
+    *,
+    acct,
+    token: str,
+    selected_mode_id: int,
+    success: bool,
+    fail_exc: BaseException | None,
+) -> None:
+    await directory.release(acct)
+    kind = (
+        FeedbackKind.SUCCESS if success
+        else _feedback_for_cli_error(fail_exc)
+    )
+    await directory.feedback(token, kind, selected_mode_id, now_s_val=now_s())
+    if success:
+        asyncio.create_task(
+            _quota_sync(token, selected_mode_id)
+        ).add_done_callback(_log_task_exception)
+    elif fail_exc is not None and not _is_oidc_deferred(fail_exc):
+        asyncio.create_task(
+            _fail_sync(token, selected_mode_id, fail_exc)
+        ).add_done_callback(_log_task_exception)
+
+
+def _usage_from_adapter(adapter: CliStreamAdapter, messages: list[dict]) -> tuple[dict, dict]:
+    usage_data = adapter.usage or {}
+    prompt_tokens = int(
+        usage_data.get("prompt_tokens")
+        or usage_data.get("input_tokens")
+        or estimate_prompt_tokens(messages)
+    )
+    completion_tokens = int(
+        usage_data.get("completion_tokens")
+        or usage_data.get("output_tokens")
+        or estimate_tokens(adapter.full_text + adapter.full_reasoning)
+    )
+    return usage_data, build_usage(prompt_tokens, completion_tokens)
 
 
 async def completions(
@@ -96,6 +223,7 @@ async def completions(
     messages: list[dict],
     stream: bool = True,
     emit_think: bool | None = None,
+    reasoning_effort: str | None = None,
     temperature: float = 0.7,
     top_p: float = 0.95,
     tools: list[dict] | None = None,
@@ -104,21 +232,25 @@ async def completions(
     """Entry point for cli-chat-proxy chat completions."""
     cfg = get_config()
     spec = resolve_model(model)
-    effort = _reasoning_effort(emit_think)
-    # CLI models can think for a long time — default higher than web chat.
+    default_effort = cfg.get_str("chat.cli_reasoning_effort", "medium")
+    effort = _reasoning_effort(
+        emit_think, reasoning_effort, default_effort=default_effort
+    )
     timeout_s = cfg.get_float("chat.timeout", 120.0)
     if timeout_s < 300:
         timeout_s = 600.0
-    max_retries = selection_max_retries()
+    max_retries = _cli_max_retries(cfg)
+    last_resort_convert = cfg.get_bool("chat.cli_oidc_hot_convert_last_resort", True)
     retry_codes = _configured_retry_codes(cfg)
     response_id = make_response_id()
 
     logger.info(
-        "cli chat request: model={} stream={} messages={} tools={}",
+        "cli chat request: model={} stream={} messages={} tools={} effort={}",
         model,
         stream,
         len(messages),
         len(tools or []),
+        effort,
     )
 
     from app.dataplane.account import _directory as _acct_dir
@@ -126,183 +258,27 @@ async def completions(
         raise RateLimitError("Account directory not initialised")
     directory = _acct_dir
 
-    # ── Streaming ─────────────────────────────────────────────────────────────
-    if stream:
-        async def _run_stream() -> AsyncGenerator[str, None]:
-            excluded: list[str] = []
-            for attempt in range(max_retries + 1):
-                acct, selected_mode_id = await reserve_account(
-                    directory,
-                    spec,
-                    now_s_override=now_s(),
-                    exclude_tokens=excluded or None,
-                )
-                if acct is None:
-                    raise RateLimitError("No available accounts for this model tier")
+    async def _one_attempt(
+        attempt: int,
+        excluded: list[str],
+        *,
+        stream_out: bool,
+    ) -> AsyncGenerator[Any, None]:
+        """Reserve → OIDC → upstream. Yields SSE strings or a single result dict.
 
-                token = acct.token
-                success = False
-                fail_exc: BaseException | None = None
-                _retry = False
-                adapter = CliStreamAdapter()
-
-                try:
-                    try:
-                        access = await asyncio.to_thread(_resolve_access_token, token)
-                    except UpstreamError as exc:
-                        fail_exc = exc
-                        if attempt < max_retries:
-                            _retry = True
-                            logger.warning(
-                                "cli oidc convert retry: attempt={}/{} status={}",
-                                attempt + 1, max_retries, exc.status,
-                            )
-                        else:
-                            raise
-                        continue
-
-                    payload = build_cli_payload(
-                        messages=messages,
-                        model=model,
-                        stream=True,
-                        temperature=temperature,
-                        top_p=top_p,
-                        tools=tools,
-                        tool_choice=tool_choice,
-                        reasoning_effort=effort,
-                    )
-
-                    try:
-                        yield ": heartbeat\n\n"
-                        tool_first_seen: set[int] = set()
-                        async for kind, data in stream_cli_chat(
-                            access, payload, timeout_s=timeout_s
-                        ):
-                            if kind == "done":
-                                break
-                            if kind != "data":
-                                continue
-                            try:
-                                obj = orjson.loads(data)
-                            except (orjson.JSONDecodeError, ValueError):
-                                continue
-                            if not isinstance(obj, dict):
-                                continue
-                            for ev in adapter.feed_data_obj(obj):
-                                if ev["kind"] == "text":
-                                    chunk = make_stream_chunk(
-                                        response_id, model, ev["text"]
-                                    )
-                                    yield f"data: {orjson.dumps(chunk).decode()}\n\n"
-                                elif ev["kind"] == "reasoning" and emit_think is not False:
-                                    think = make_thinking_chunk(
-                                        response_id, model, ev["text"]
-                                    )
-                                    yield f"data: {orjson.dumps(think).decode()}\n\n"
-                                elif ev["kind"] == "tool_calls":
-                                    tc = ev.get("tool_call") or {}
-                                    idx = int(ev.get("index") or 0)
-                                    fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
-                                    is_first = idx not in tool_first_seen
-                                    if is_first:
-                                        tool_first_seen.add(idx)
-                                    chunk = make_tool_call_chunk(
-                                        response_id,
-                                        model,
-                                        idx,
-                                        str(tc.get("id") or f"call_{idx}"),
-                                        str(fn.get("name") or ""),
-                                        str(fn.get("arguments") or ""),
-                                        is_first=is_first,
-                                    )
-                                    yield f"data: {orjson.dumps(chunk).decode()}\n\n"
-
-                        adapter.mark_done()
-                        tools_out = adapter.tool_calls
-                        usage_data = adapter.usage or {}
-                        prompt_tokens = int(
-                            usage_data.get("prompt_tokens")
-                            or usage_data.get("input_tokens")
-                            or estimate_prompt_tokens(messages)
-                        )
-                        completion_tokens = int(
-                            usage_data.get("completion_tokens")
-                            or usage_data.get("output_tokens")
-                            or estimate_tokens(adapter.full_text + adapter.full_reasoning)
-                        )
-                        usage = build_usage(prompt_tokens, completion_tokens)
-
-                        if tools_out:
-                            done = make_tool_call_done_chunk(
-                                response_id, model, usage=usage
-                            )
-                            yield f"data: {orjson.dumps(done).decode()}\n\n"
-                        else:
-                            final = make_stream_chunk(
-                                response_id, model, "", is_final=True
-                            )
-                            final["usage"] = usage
-                            yield f"data: {orjson.dumps(final).decode()}\n\n"
-                        yield "data: [DONE]\n\n"
-                        success = True
-                        logger.info(
-                            "cli chat stream completed: attempt={}/{} model={} tokens={}",
-                            attempt + 1,
-                            max_retries + 1,
-                            model,
-                            usage_data.get("total_tokens", prompt_tokens + completion_tokens),
-                        )
-
-                    except UpstreamError as exc:
-                        fail_exc = exc
-                        if _should_retry_upstream(exc, retry_codes) and attempt < max_retries:
-                            _retry = True
-                            logger.warning(
-                                "cli chat retry: attempt={}/{} status={} token={}...",
-                                attempt + 1, max_retries, exc.status, token[:8],
-                            )
-                        else:
-                            logger.warning(
-                                "cli chat upstream failed: model={} status={} attempt={}/{} body={}",
-                                model,
-                                exc.status,
-                                attempt + 1,
-                                max_retries + 1,
-                                (exc.details or {}).get("body", "")[:200],
-                            )
-                            raise
-
-                finally:
-                    await directory.release(acct)
-                    kind = (
-                        FeedbackKind.SUCCESS if success
-                        else feedback_kind_for_error(fail_exc) if fail_exc
-                        else FeedbackKind.SERVER_ERROR
-                    )
-                    await directory.feedback(token, kind, selected_mode_id, now_s_val=now_s())
-                    if success:
-                        asyncio.create_task(
-                            _quota_sync(token, selected_mode_id)
-                        ).add_done_callback(_log_task_exception)
-                    else:
-                        asyncio.create_task(
-                            _fail_sync(token, selected_mode_id, fail_exc)
-                        ).add_done_callback(_log_task_exception)
-
-                if success or not _retry:
-                    return
-                excluded.append(token)
-
-        return _run_stream()
-
-    # ── Non-streaming ─────────────────────────────────────────────────────────
-    excluded: list[str] = []
-    for attempt in range(max_retries + 1):
+        Raises UpstreamError on terminal failure; sets excluded via caller on retry.
+        Yields control tokens:
+          - ("retry", token, exc) when caller should swap account
+          - str chunks for stream
+          - dict for non-stream result
+        """
+        prefer = _prefer_warm_tokens()
         acct, selected_mode_id = await reserve_account(
             directory,
             spec,
             now_s_override=now_s(),
             exclude_tokens=excluded or None,
+            prefer_tokens=prefer,
         )
         if acct is None:
             raise RateLimitError("No available accounts for this model tier")
@@ -311,21 +287,42 @@ async def completions(
         success = False
         fail_exc: BaseException | None = None
         adapter = CliStreamAdapter()
+        allow_convert = _should_hot_convert(
+            last_resort=last_resort_convert,
+            attempt=attempt,
+            max_retries=max_retries,
+        )
+        t_req = time.perf_counter()
+        oidc_ms = 0
 
         try:
             try:
-                access = await asyncio.to_thread(_resolve_access_token, token)
+                t_oidc = time.perf_counter()
+                access = await asyncio.to_thread(
+                    _resolve_access_token, token, allow_convert=allow_convert
+                )
+                oidc_ms = int((time.perf_counter() - t_oidc) * 1000)
             except UpstreamError as exc:
                 fail_exc = exc
                 if attempt < max_retries:
-                    excluded.append(token)
-                    continue
+                    logger.warning(
+                        "cli oidc miss swap: attempt={}/{} status={} "
+                        "token={}... oidc_ms={} hot_convert={}",
+                        attempt + 1,
+                        max_retries,
+                        exc.status,
+                        token[:8],
+                        oidc_ms,
+                        allow_convert,
+                    )
+                    yield ("retry", token, exc)
+                    return
                 raise
 
             payload = build_cli_payload(
                 messages=messages,
                 model=model,
-                stream=True,  # always stream upstream; aggregate locally
+                stream=True,
                 temperature=temperature,
                 top_p=top_p,
                 tools=tools,
@@ -334,6 +331,95 @@ async def completions(
             )
 
             try:
+                t_up = time.perf_counter()
+                if stream_out:
+                    yield ": heartbeat\n\n"
+                    tool_first_seen: set[int] = set()
+                    async for kind, data in stream_cli_chat(
+                        access, payload, timeout_s=timeout_s
+                    ):
+                        if kind == "done":
+                            break
+                        if kind != "data":
+                            continue
+                        try:
+                            obj = orjson.loads(data)
+                        except (orjson.JSONDecodeError, ValueError):
+                            continue
+                        if not isinstance(obj, dict):
+                            continue
+                        for ev in adapter.feed_data_obj(obj):
+                            if ev["kind"] == "text":
+                                chunk = make_stream_chunk(
+                                    response_id, model, ev["text"]
+                                )
+                                yield f"data: {orjson.dumps(chunk).decode()}\n\n"
+                            elif (
+                                ev["kind"] == "reasoning"
+                                and emit_think is not False
+                            ):
+                                think = make_thinking_chunk(
+                                    response_id, model, ev["text"]
+                                )
+                                yield f"data: {orjson.dumps(think).decode()}\n\n"
+                            elif ev["kind"] == "tool_calls":
+                                tc = ev.get("tool_call") or {}
+                                idx = int(ev.get("index") or 0)
+                                fn = (
+                                    tc.get("function")
+                                    if isinstance(tc.get("function"), dict)
+                                    else {}
+                                )
+                                is_first = idx not in tool_first_seen
+                                if is_first:
+                                    tool_first_seen.add(idx)
+                                chunk = make_tool_call_chunk(
+                                    response_id,
+                                    model,
+                                    idx,
+                                    str(tc.get("id") or f"call_{idx}"),
+                                    str(fn.get("name") or ""),
+                                    str(fn.get("arguments") or ""),
+                                    is_first=is_first,
+                                )
+                                yield f"data: {orjson.dumps(chunk).decode()}\n\n"
+
+                    adapter.mark_done()
+                    usage_data, usage = _usage_from_adapter(adapter, messages)
+                    upstream_ms = int((time.perf_counter() - t_up) * 1000)
+                    if adapter.tool_calls:
+                        done = make_tool_call_done_chunk(
+                            response_id, model, usage=usage
+                        )
+                        yield f"data: {orjson.dumps(done).decode()}\n\n"
+                    else:
+                        final = make_stream_chunk(
+                            response_id, model, "", is_final=True
+                        )
+                        final["usage"] = usage
+                        yield f"data: {orjson.dumps(final).decode()}\n\n"
+                    yield "data: [DONE]\n\n"
+                    success = True
+                    total_ms = int((time.perf_counter() - t_req) * 1000)
+                    logger.info(
+                        "cli chat stream completed: attempt={}/{} model={} "
+                        "tokens={} oidc_ms={} upstream_ms={} total_ms={} "
+                        "hot_convert={}",
+                        attempt + 1,
+                        max_retries + 1,
+                        model,
+                        usage_data.get(
+                            "total_tokens",
+                            usage["prompt_tokens"] + usage["completion_tokens"],
+                        ),
+                        oidc_ms,
+                        upstream_ms,
+                        total_ms,
+                        allow_convert,
+                    )
+                    return
+
+                # non-stream: aggregate upstream SSE
                 async for kind, data in stream_cli_chat(
                     access, payload, timeout_s=timeout_s
                 ):
@@ -349,25 +435,17 @@ async def completions(
                         adapter.feed_data_obj(obj)
 
                 adapter.mark_done()
-                usage_data = adapter.usage or {}
-                prompt_tokens = int(
-                    usage_data.get("prompt_tokens")
-                    or usage_data.get("input_tokens")
-                    or estimate_prompt_tokens(messages)
-                )
-                completion_tokens = int(
-                    usage_data.get("completion_tokens")
-                    or usage_data.get("output_tokens")
-                    or estimate_tokens(adapter.full_text + adapter.full_reasoning)
-                )
-                usage = build_usage(prompt_tokens, completion_tokens)
+                usage_data, usage = _usage_from_adapter(adapter, messages)
+                upstream_ms = int((time.perf_counter() - t_up) * 1000)
 
                 if adapter.tool_calls:
                     parsed = [
                         ParsedToolCall(
                             call_id=str(tc.get("id") or f"call_{i}"),
                             name=str((tc.get("function") or {}).get("name") or ""),
-                            arguments=str((tc.get("function") or {}).get("arguments") or "{}"),
+                            arguments=str(
+                                (tc.get("function") or {}).get("arguments") or "{}"
+                            ),
                         )
                         for i, tc in enumerate(adapter.tool_calls)
                         if isinstance(tc, dict)
@@ -391,41 +469,95 @@ async def completions(
                         model, content, response_id=response_id, usage=usage
                     )
                 success = True
+                total_ms = int((time.perf_counter() - t_req) * 1000)
                 logger.info(
-                    "cli chat non-stream completed: model={} tokens={}",
+                    "cli chat non-stream completed: model={} tokens={} "
+                    "oidc_ms={} upstream_ms={} total_ms={} hot_convert={}",
                     model,
-                    usage_data.get("total_tokens", prompt_tokens + completion_tokens),
+                    usage_data.get(
+                        "total_tokens",
+                        usage["prompt_tokens"] + usage["completion_tokens"],
+                    ),
+                    oidc_ms,
+                    upstream_ms,
+                    total_ms,
+                    allow_convert,
                 )
-                return result
+                yield result
+                return
 
             except UpstreamError as exc:
                 fail_exc = exc
                 if _should_retry_upstream(exc, retry_codes) and attempt < max_retries:
                     logger.warning(
-                        "cli chat non-stream retry: attempt={}/{} status={}",
-                        attempt + 1, max_retries, exc.status,
+                        "cli chat retry: attempt={}/{} status={} "
+                        "token={}... oidc_ms={}",
+                        attempt + 1,
+                        max_retries,
+                        exc.status,
+                        token[:8],
+                        oidc_ms,
                     )
-                    excluded.append(token)
-                    continue
+                    yield ("retry", token, exc)
+                    return
+                logger.warning(
+                    "cli chat upstream failed: model={} status={} "
+                    "attempt={}/{} oidc_ms={} body={}",
+                    model,
+                    exc.status,
+                    attempt + 1,
+                    max_retries + 1,
+                    oidc_ms,
+                    (exc.details or {}).get("body", "")[:200],
+                )
                 raise
 
         finally:
-            await directory.release(acct)
-            kind = (
-                FeedbackKind.SUCCESS if success
-                else feedback_kind_for_error(fail_exc) if fail_exc
-                else FeedbackKind.SERVER_ERROR
+            await _release_and_feedback(
+                directory,
+                acct=acct,
+                token=token,
+                selected_mode_id=selected_mode_id,
+                success=success,
+                fail_exc=fail_exc,
             )
-            await directory.feedback(token, kind, selected_mode_id, now_s_val=now_s())
-            if success:
-                asyncio.create_task(
-                    _quota_sync(token, selected_mode_id)
-                ).add_done_callback(_log_task_exception)
-            else:
-                asyncio.create_task(
-                    _fail_sync(token, selected_mode_id, fail_exc)
-                ).add_done_callback(_log_task_exception)
 
+    # ── Streaming ─────────────────────────────────────────────────────────────
+    if stream:
+        async def _run_stream() -> AsyncGenerator[str, None]:
+            excluded: list[str] = []
+            for attempt in range(max_retries + 1):
+                async for item in _one_attempt(
+                    attempt, excluded, stream_out=True
+                ):
+                    if (
+                        isinstance(item, tuple)
+                        and len(item) == 3
+                        and item[0] == "retry"
+                    ):
+                        excluded.append(str(item[1]))
+                        break
+                    yield item  # type: ignore[misc]
+                else:
+                    # generator exhausted without retry → success or raised
+                    return
+            raise RateLimitError("No available accounts after retries")
+
+        return _run_stream()
+
+    # ── Non-streaming ─────────────────────────────────────────────────────────
+    excluded: list[str] = []
+    for attempt in range(max_retries + 1):
+        async for item in _one_attempt(attempt, excluded, stream_out=False):
+            if isinstance(item, tuple) and len(item) == 3 and item[0] == "retry":
+                excluded.append(str(item[1]))
+                break
+            if isinstance(item, dict):
+                return item
+        else:
+            # exhausted without break — if we returned a dict we'd have returned;
+            # if raised, wouldn't get here. Fall through to next attempt only on break.
+            continue
     raise RateLimitError("No available accounts after retries")
 
 
