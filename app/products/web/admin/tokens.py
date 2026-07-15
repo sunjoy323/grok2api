@@ -96,9 +96,16 @@ class ToggleTokensDisabledRequest(BaseModel):
 
 
 class OidcConvertRequest(BaseModel):
-    """Enqueue SSO→OIDC conversion on the paced background worker."""
+    """Enqueue SSO→OIDC conversion on the paced background worker.
+
+    scope:
+      - tokens  (default): convert *tokens* list
+      - missing: all manageable accounts with no OIDC disk entry
+      - all:     all manageable accounts (fresh disk entries still skip in worker)
+    """
 
     tokens: list[str] = []
+    scope: str = "tokens"
 
 
 class TokenImportItem(BaseModel):
@@ -398,21 +405,126 @@ async def edit_token(
     return _json({"status": "success", "token": new_token, "pool": pool})
 
 
-@router.post("/tokens/oidc-convert")
-async def enqueue_oidc_convert(req: OidcConvertRequest):
-    """Re-enqueue tokens for paced SSO→OIDC conversion (background worker).
+def _oidc_disk_entry_map() -> dict:
+    """SSO sha256 → credential dict from oidc_auth.json."""
+    try:
+        from app.dataplane.reverse.protocol.xai_oidc import load_disk_cache
 
+        data = load_disk_cache()
+        entries = data.get("entries") if isinstance(data, dict) else None
+        return entries if isinstance(entries, dict) else {}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("admin oidc disk load failed: {}", exc)
+        return {}
+
+
+def _oidc_has_entry(token: str, entries: dict) -> bool:
+    from app.dataplane.reverse.protocol.xai_oidc import sso_key
+
+    ent = entries.get(sso_key(token))
+    return isinstance(ent, dict) and bool(ent.get("access_token"))
+
+
+async def _oidc_missing_tokens(repo: "AccountRepository") -> list[str]:
+    """Tokens that have no OIDC access_token on disk (expired entries count as present)."""
+    entries = _oidc_disk_entry_map()
+    payloads = await _list_token_payloads(repo)
+    missing: list[str] = []
+    for item in payloads:
+        tok = item.get("token") or ""
+        if not tok:
+            continue
+        # Only care about manageable accounts (active/cooling); still include disabled
+        # if admin wants full pool visibility — count all non-deleted listed tokens.
+        if not _oidc_has_entry(tok, entries):
+            missing.append(tok)
+    return missing
+
+
+def _oidc_status_payload(
+    *,
+    total: int,
+    missing: int,
+) -> dict:
+    worker = _oidc_worker_task
+    return {
+        "total": total,
+        "with_oidc": max(0, total - missing),
+        "missing": missing,
+        "queue_depth": _oidc_queue_depth(),
+        "worker_running": bool(worker is not None and not worker.done()),
+        "stats": dict(_oidc_stats),
+    }
+
+
+@router.get("/tokens/oidc-status")
+async def oidc_status(repo: "AccountRepository" = Depends(get_repo)):
+    """OIDC coverage summary for the account pool (disk cache vs SSO tokens)."""
+    payloads = await _list_token_payloads(repo)
+    total = len(payloads)
+    entries = _oidc_disk_entry_map()
+    missing = 0
+    for item in payloads:
+        tok = item.get("token") or ""
+        if tok and not _oidc_has_entry(tok, entries):
+            missing += 1
+    return _json(_oidc_status_payload(total=total, missing=missing))
+
+
+@router.post("/tokens/oidc-convert")
+async def enqueue_oidc_convert(
+    req: OidcConvertRequest,
+    repo: "AccountRepository" = Depends(get_repo),
+):
+    """Enqueue paced SSO→OIDC conversion (background worker).
+
+    Manual admin triggers always enqueue even if auto_oidc_on_import is off.
     Already-fresh disk credentials are skipped inside the convert worker.
     """
-    cleaned = list(dict.fromkeys(t for t in (_sanitize(x) for x in req.tokens) if t))
+    scope = (req.scope or "tokens").strip().lower()
+    if scope not in ("tokens", "missing", "all"):
+        raise ValidationError("scope must be tokens|missing|all", param="scope")
+
+    if scope == "missing":
+        cleaned = await _oidc_missing_tokens(repo)
+    elif scope == "all":
+        cleaned = [t for t in (item.get("token") for item in await _list_token_payloads(repo)) if t]
+    else:
+        cleaned = list(dict.fromkeys(t for t in (_sanitize(x) for x in req.tokens) if t))
+
     if not cleaned:
-        raise ValidationError("No valid tokens provided", param="tokens")
-    added = schedule_oidc_convert(cleaned)
+        if scope == "tokens":
+            raise ValidationError("No valid tokens provided", param="tokens")
+        # missing/all with empty set — success no-op
+        payloads = await _list_token_payloads(repo)
+        entries = _oidc_disk_entry_map()
+        missing = sum(
+            1 for item in payloads if (tok := item.get("token")) and not _oidc_has_entry(tok, entries)
+        )
+        return _json({
+            "status": "success",
+            "scope": scope,
+            "requested": 0,
+            "queued": 0,
+            "queue_depth": _oidc_queue_depth(),
+            **_oidc_status_payload(total=len(payloads), missing=missing),
+            "message": "nothing_to_queue",
+        })
+
+    # force=True: admin manual action must not be blocked by auto_oidc_on_import.
+    added = schedule_oidc_convert(cleaned, force=True)
+    payloads = await _list_token_payloads(repo)
+    entries = _oidc_disk_entry_map()
+    missing = sum(
+        1 for item in payloads if (tok := item.get("token")) and not _oidc_has_entry(tok, entries)
+    )
     return _json({
         "status": "success",
+        "scope": scope,
         "requested": len(cleaned),
         "queued": added,
         "queue_depth": _oidc_queue_depth(),
+        **_oidc_status_payload(total=len(payloads), missing=missing),
     })
 
 
@@ -611,15 +723,17 @@ def _oidc_queue_depth() -> int:
     return len(_oidc_pending)
 
 
-def schedule_oidc_convert(tokens: list[str]) -> int:
+def schedule_oidc_convert(tokens: list[str], *, force: bool = False) -> int:
     """Enqueue tokens for paced background SSO→OIDC conversion.
 
     Import/register paths call this (non-blocking). A single worker drains
     the queue in small batches with delays between items and batches.
+
+    force=True: used by admin UI manual trigger — ignores auto_oidc_on_import=false.
     """
     global _oidc_worker_task
 
-    if not get_config().get_bool("features.auto_oidc_on_import", True):
+    if not force and not get_config().get_bool("features.auto_oidc_on_import", True):
         logger.info("admin import auto oidc skipped: disabled by config")
         return 0
 

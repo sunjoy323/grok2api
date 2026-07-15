@@ -78,12 +78,61 @@
     /* Stats */
     .stat-grid {
       display:grid;
-      grid-template-columns:repeat(5, minmax(0, 1fr));
+      grid-template-columns:repeat(6, minmax(0, 1fr));
       gap:12px;
       margin-bottom:20px;
     }
     .stat-grid.mode-random {
-      grid-template-columns:repeat(4, minmax(0, 1fr));
+      grid-template-columns:repeat(6, minmax(0, 1fr));
+    }
+    @media (max-width: 1200px) {
+      .stat-grid, .stat-grid.mode-random {
+        grid-template-columns:repeat(3, minmax(0, 1fr));
+      }
+    }
+    @media (max-width: 720px) {
+      .stat-grid, .stat-grid.mode-random {
+        grid-template-columns:repeat(2, minmax(0, 1fr));
+      }
+    }
+    .stat-cell-action {
+      cursor: default;
+    }
+    .stat-cell .stat-action-btn {
+      margin-top: auto;
+      height: 26px;
+      padding: 0 10px;
+      border-radius: 999px;
+      border: 1px solid #e6e6e6;
+      background: #fafafa;
+      color: #444;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      align-self: flex-start;
+    }
+    .stat-cell .stat-action-btn:hover:not(:disabled) {
+      background: #f3f3f3;
+      border-color: #dcdcdc;
+    }
+    .stat-cell .stat-action-btn:disabled {
+      opacity: .5;
+      cursor: not-allowed;
+    }
+    .stat-cell .stat-action-btn.has-work {
+      background: #111;
+      border-color: #111;
+      color: #fff;
+    }
+    .stat-cell .stat-action-btn.has-work:hover:not(:disabled) {
+      background: #222;
+      border-color: #222;
+    }
+    .stat-sub {
+      font-size: 11px;
+      color: #8a8a8a;
+      margin-top: -6px;
+      font-variant-numeric: tabular-nums;
     }
     .stat-grid-quota {
       display:grid;
@@ -793,6 +842,17 @@
       </div>
       <div class="stat-num" id="s-disabled" style="color:#6f675d">0</div>
     </div>
+    <div class="stat-cell stat-cell-action" data-stat-card="oidc-missing">
+      <div class="stat-top">
+        <div class="stat-label" data-i18n="account.statOidcMissing">无 OIDC</div>
+        <span class="stat-icon" style="color:#7c3aed">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8"><path d="M12 3v4"/><path d="M12 17v4"/><path d="m5.6 5.6 2.8 2.8"/><path d="m15.6 15.6 2.8 2.8"/><path d="M3 12h4"/><path d="M17 12h4"/><path d="m5.6 18.4 2.8-2.8"/><path d="m15.6 8.4 2.8-2.8"/><circle cx="12" cy="12" r="3"/></svg>
+        </span>
+      </div>
+      <div class="stat-num" id="s-oidc-missing" style="color:#7c3aed">0</div>
+      <div class="stat-sub" id="s-oidc-queue" style="display:none"></div>
+      <button type="button" class="stat-action-btn" id="btn-oidc-convert" onclick="convertMissingOidc()" disabled data-i18n="account.actionOidcConvert">转换 OIDC</button>
+    </div>
   </div>
 
   <!-- Quota stats (6 columns) -->
@@ -1224,15 +1284,24 @@ async function _api(method, path, body) {
 // Controls whether quota columns / stats are rendered (hidden in random mode).
 let selectionStrategy = 'quota';
 
+// OIDC coverage (from /tokens/oidc-status)
+let oidcStatus = { total: 0, with_oidc: 0, missing: 0, queue_depth: 0, worker_running: false, stats: {} };
+let _oidcPolling = null;
+let _oidcConverting = false;
+
 // ── Load ───────────────────────────────────────────────────────────────────
 async function load() {
   try {
-    const [data, status] = await Promise.all([
+    const [data, status, oidc] = await Promise.all([
       _api('GET', '/tokens'),
       _api('GET', '/status').catch(() => null),
+      _api('GET', '/tokens/oidc-status').catch(() => null),
     ]);
     if (status && typeof status.selection_strategy === 'string') {
       selectionStrategy = status.selection_strategy;
+    }
+    if (oidc && typeof oidc === 'object') {
+      oidcStatus = oidc;
     }
     allTokens = Array.isArray(data.tokens)
       ? data.tokens
@@ -1241,6 +1310,10 @@ async function load() {
     applyStrategyUI();
     invalidateTokenView();
     render();
+    renderOidcStatus();
+    if (oidcStatus.worker_running || (oidcStatus.queue_depth || 0) > 0) {
+      startOidcPolling();
+    }
   } catch (e) { showToast(`${tr('account.loadFailed', null, '加载失败')}: ${e.message}`, 'error'); }
 }
 
@@ -1385,6 +1458,100 @@ function renderStats(view = getTokenView()) {
   $('s-success', fmt(stats.success));
   $('s-rate', fmtRate(stats.success, stats.fail));
   $('s-qa', fmt(stats.qa)); $('s-qf', fmt(stats.qf)); $('s-qe', fmt(stats.qe)); $('s-qh', fmt(stats.qh)); $('s-qc', fmt(stats.qc)); $('s-qcli', fmt(stats.qcli));
+  renderOidcStatus();
+}
+
+function renderOidcStatus() {
+  const missing = Number(oidcStatus.missing || 0);
+  const queue = Number(oidcStatus.queue_depth || 0);
+  const running = !!oidcStatus.worker_running || queue > 0 || _oidcConverting;
+  const numEl = document.getElementById('s-oidc-missing');
+  if (numEl) numEl.textContent = fmt(missing);
+  const queueEl = document.getElementById('s-oidc-queue');
+  if (queueEl) {
+    if (running || queue > 0) {
+      queueEl.style.display = '';
+      queueEl.textContent = tr(
+        'account.oidcQueueHint',
+        { n: queue },
+        queue > 0 ? `队列 ${queue}` : '转换中…'
+      );
+    } else {
+      queueEl.style.display = 'none';
+      queueEl.textContent = '';
+    }
+  }
+  const btn = document.getElementById('btn-oidc-convert');
+  if (btn) {
+    const canRun = missing > 0 && !_oidcConverting;
+    btn.disabled = !canRun;
+    btn.classList.toggle('has-work', missing > 0);
+    btn.textContent = _oidcConverting
+      ? tr('account.actionOidcConverting', null, '转换中…')
+      : (missing > 0
+          ? tr('account.actionOidcConvertN', { n: missing }, `转换 OIDC (${missing})`)
+          : tr('account.actionOidcConvert', null, '转换 OIDC'));
+  }
+}
+
+function startOidcPolling() {
+  if (_oidcPolling) return;
+  _oidcPolling = setInterval(async () => {
+    try {
+      const d = await _api('GET', '/tokens/oidc-status');
+      if (d && typeof d === 'object') oidcStatus = d;
+      renderOidcStatus();
+      const q = Number(oidcStatus.queue_depth || 0);
+      if (!_oidcConverting && q <= 0 && !oidcStatus.worker_running) {
+        stopOidcPolling();
+      }
+    } catch (_) { /* ignore poll errors */ }
+  }, 3000);
+}
+
+function stopOidcPolling() {
+  if (_oidcPolling) {
+    clearInterval(_oidcPolling);
+    _oidcPolling = null;
+  }
+}
+
+async function convertMissingOidc() {
+  const missing = Number(oidcStatus.missing || 0);
+  if (missing <= 0 || _oidcConverting) return;
+  if (!confirm(tr(
+    'account.oidcConvertConfirm',
+    { n: missing },
+    `将把 ${missing} 个无 OIDC 的账号加入后台队列分批转换，是否继续？`
+  ))) return;
+
+  _oidcConverting = true;
+  renderOidcStatus();
+  try {
+    const d = await _api('POST', '/tokens/oidc-convert', { scope: 'missing', tokens: [] });
+    if (d && typeof d === 'object') {
+      oidcStatus = {
+        ...oidcStatus,
+        total: d.total ?? oidcStatus.total,
+        with_oidc: d.with_oidc ?? oidcStatus.with_oidc,
+        missing: d.missing ?? oidcStatus.missing,
+        queue_depth: d.queue_depth ?? d.queued ?? oidcStatus.queue_depth,
+        worker_running: true,
+        stats: d.stats || oidcStatus.stats,
+      };
+    }
+    const queued = d?.queued ?? 0;
+    showToast(
+      tr('account.oidcConvertQueued', { n: queued }, `已入队 ${queued} 个，后台分批转换中`),
+      'success'
+    );
+    startOidcPolling();
+  } catch (e) {
+    showToast(`${tr('account.oidcConvertFailed', null, 'OIDC 转换触发失败')}: ${e.message}`, 'error');
+  } finally {
+    _oidcConverting = false;
+    renderOidcStatus();
+  }
 }
 
 function renderFilters(view = getTokenView()) {
