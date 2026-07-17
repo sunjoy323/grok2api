@@ -470,6 +470,14 @@
       color:#6f675d;
       background:#f1ece4;
     }
+    .table-card .badge-oidc-yes {
+      color:#3e8f69;
+      background:#f2f8f4;
+    }
+    .table-card .badge-oidc-no {
+      color:#7c3aed;
+      background:#f5f0ff;
+    }
     .table-center { text-align:center }
     .table-center .badge { margin:0 auto }
     .token-stack {
@@ -974,6 +982,23 @@
                 </button>
               </div>
             </div>
+            <div class="filter-group">
+              <span class="filter-label" data-i18n="account.filterOidcLabel">OIDC</span>
+              <div class="filter-chip-list">
+                <button type="button" class="filter-chip active" data-oidc="all" onclick="switchOidc('all')">
+                  <span data-i18n="account.filterOidcAll">全部</span>
+                  <span class="filter-chip-count" id="fc-oidc-all">0</span>
+                </button>
+                <button type="button" class="filter-chip" data-oidc="yes" onclick="switchOidc('yes')">
+                  <span data-i18n="account.filterOidcYes">有</span>
+                  <span class="filter-chip-count is-green" id="fc-oidc-yes">0</span>
+                </button>
+                <button type="button" class="filter-chip" data-oidc="no" onclick="switchOidc('no')">
+                  <span data-i18n="account.filterOidcNo">无</span>
+                  <span class="filter-chip-count is-red" id="fc-oidc-no">0</span>
+                </button>
+              </div>
+            </div>
             <div class="filter-group" id="pool-filter-group">
               <span class="filter-label" data-i18n="account.filterTypeLabel">类型</span>
               <div class="filter-chip-list" id="pool-filter-chips"></div>
@@ -1058,6 +1083,7 @@
           <th style="width:200px" data-i18n="account.colToken">Token</th>
           <th class="table-center" style="width:70px" data-i18n="account.colType">类型</th>
           <th class="table-center" style="width:70px" data-i18n="account.colStatus">状态</th>
+          <th class="table-center" style="width:70px" data-i18n="account.colOidc">OIDC</th>
           <th data-quota-only>
             <span data-i18n="account.colQuota">额度</span>
             <span style="margin-left:6px;display:inline-flex;align-items:center;gap:3px;vertical-align:middle">
@@ -1197,7 +1223,7 @@
 const PAGE_SIZE_KEY = 'admin.account.page_size';
 const PAGE_SIZE_OPTIONS = [50, 100, 200, 500, 1000, 2000];
 
-let allTokens = [], curStatus = 'all', curNsfw = 'all', curPool = 'all', curPage = 1, pageSize = loadSavedPageSize();
+let allTokens = [], curStatus = 'all', curNsfw = 'all', curPool = 'all', curOidc = 'all', curPage = 1, pageSize = loadSavedPageSize();
 const sel = new Set();
 const refreshingTokens = new Set();
 let _cb = null;
@@ -1339,7 +1365,7 @@ function render() {
 }
 
 function getTokenView() {
-  const cacheKey = `${_tokenViewVersion}|${curStatus}|${curNsfw}|${curPool}`;
+  const cacheKey = `${_tokenViewVersion}|${curStatus}|${curNsfw}|${curPool}|${curOidc}`;
   if (_tokenViewCache && _tokenViewCacheKey === cacheKey) return _tokenViewCache;
 
   const stats = {
@@ -1359,6 +1385,7 @@ function getTokenView() {
   };
   const statusCounts = { all: 0, active: 0, cooling: 0, invalid: 0, disabled: 0 };
   const nsfwCounts = { all: 0, enabled: 0, disabled: 0 };
+  const oidcCounts = { all: 0, yes: 0, no: 0 };
   const poolCounts = new Map([['all', 0]]);
   const poolsSet = new Set(['basic', 'super', 'heavy']);
   const filteredItems = [];
@@ -1367,12 +1394,14 @@ function getTokenView() {
     const pool = token.pool || 'basic';
     const quota = token.quota || {};
     const nsfwEnabled = (token.tags || []).includes('nsfw');
+    const hasOidc = !!token.has_oidc;
     const invalid = isInvalidStatus(token.status);
     const disabled = isDisabledStatus(token.status);
     const matchesPool = curPool === 'all' || pool === curPool;
     const matchesStatus = curStatus === 'all'
       || (curStatus === 'invalid' ? invalid : curStatus === 'disabled' ? disabled : token.status === curStatus);
     const matchesNsfw = curNsfw === 'all' || (curNsfw === 'enabled' ? nsfwEnabled : !nsfwEnabled);
+    const matchesOidc = curOidc === 'all' || (curOidc === 'yes' ? hasOidc : !hasOidc);
 
     poolsSet.add(pool);
     const successCount = token.use_count || 0;
@@ -1392,7 +1421,8 @@ function getTokenView() {
     if (invalid) stats.invalid += 1;
     if (disabled) stats.disabled += 1;
 
-    if (matchesPool && matchesNsfw) {
+    // Each filter chip count applies all other filters (facet-style).
+    if (matchesPool && matchesNsfw && matchesOidc) {
       statusCounts.all += 1;
       if (token.status === 'active') statusCounts.active += 1;
       if (token.status === 'cooling') statusCounts.cooling += 1;
@@ -1400,18 +1430,24 @@ function getTokenView() {
       if (disabled) statusCounts.disabled += 1;
     }
 
-    if (matchesPool && matchesStatus) {
+    if (matchesPool && matchesStatus && matchesOidc) {
       nsfwCounts.all += 1;
       if (nsfwEnabled) nsfwCounts.enabled += 1;
       else nsfwCounts.disabled += 1;
     }
 
-    if (matchesStatus && matchesNsfw) {
+    if (matchesPool && matchesStatus && matchesNsfw) {
+      oidcCounts.all += 1;
+      if (hasOidc) oidcCounts.yes += 1;
+      else oidcCounts.no += 1;
+    }
+
+    if (matchesStatus && matchesNsfw && matchesOidc) {
       poolCounts.set('all', poolCounts.get('all') + 1);
       poolCounts.set(pool, (poolCounts.get(pool) || 0) + 1);
     }
 
-    if (matchesPool && matchesStatus && matchesNsfw) filteredItems.push(token);
+    if (matchesPool && matchesStatus && matchesNsfw && matchesOidc) filteredItems.push(token);
   }
 
   if (curPool !== 'all' && !poolsSet.has(curPool)) {
@@ -1419,11 +1455,12 @@ function getTokenView() {
     return getTokenView();
   }
 
-  _tokenViewCacheKey = `${_tokenViewVersion}|${curStatus}|${curNsfw}|${curPool}`;
+  _tokenViewCacheKey = cacheKey;
   _tokenViewCache = {
     stats,
     statusCounts,
     nsfwCounts,
+    oidcCounts,
     poolCounts,
     pools: Array.from(poolsSet),
     filteredItems,
@@ -1556,6 +1593,7 @@ async function convertMissingOidc() {
 
 function renderFilters(view = getTokenView()) {
   renderStatusFilters(view);
+  renderOidcFilters(view);
   renderNsfwFilters(view);
   renderPoolFilters(view);
   syncFilterTrigger();
@@ -1597,7 +1635,7 @@ function syncFilterTrigger() {
   const menu = document.getElementById('filter-menu');
   const trigger = document.getElementById('btn-filter');
   if (!menu || !trigger) return;
-  const active = curStatus !== 'all' || curPool !== 'all' || curNsfw !== 'all' || menu.classList.contains('open');
+  const active = curStatus !== 'all' || curPool !== 'all' || curNsfw !== 'all' || curOidc !== 'all' || menu.classList.contains('open');
   trigger.classList.toggle('is-active', active);
 }
 
@@ -1608,6 +1646,14 @@ function renderStatusFilters(view = getTokenView()) {
   setFilterCount('fc-status-invalid', view.statusCounts.invalid);
   setFilterCount('fc-status-disabled', view.statusCounts.disabled);
   document.querySelectorAll('[data-status]').forEach(el => el.classList.toggle('active', el.dataset.status === curStatus));
+}
+
+function renderOidcFilters(view = getTokenView()) {
+  const counts = view.oidcCounts || { all: 0, yes: 0, no: 0 };
+  setFilterCount('fc-oidc-all', counts.all);
+  setFilterCount('fc-oidc-yes', counts.yes);
+  setFilterCount('fc-oidc-no', counts.no);
+  document.querySelectorAll('[data-oidc]').forEach(el => el.classList.toggle('active', el.dataset.oidc === curOidc));
 }
 
 function renderNsfwFilters(view = getTokenView()) {
@@ -1672,7 +1718,7 @@ function renderTable(view = getTokenView()) {
 
   document.getElementById('tbody').innerHTML = slice.length
     ? slice.map(rowHtml).join('')
-    : `<tr><td colspan="10" class="empty-state">${tr('account.empty', null, '暂无 Token，请点击右上角导入或添加。')}</td></tr>`;
+    : `<tr><td colspan="11" class="empty-state">${tr('account.empty', null, '暂无 Token，请点击右上角导入或添加。')}</td></tr>`;
 
   $('pagi-page', tr('account.pageIndicator', { current: total ? curPage : 0, total: pages }, `第 ${total ? curPage : 0} / ${pages} 页`));
   $('section-table-count', total);
@@ -1713,6 +1759,7 @@ function rowHtml(t) {
       </div></td>
     <td class="table-center"><span class="badge badge-${t.pool||'basic'}">${xe(poolLabel(t.pool || 'basic'))}</span></td>
     <td class="table-center">${statusBadge(t.status)}</td>
+    <td class="table-center">${oidcBadge(!!t.has_oidc)}</td>
     <td data-quota-only><div class="quota-cell">${qpills(q)}</div></td>
     <td class="table-center" style="font-variant-numeric:tabular-nums;color:#8f8f8f">${success}</td>
     <td class="table-center" style="font-variant-numeric:tabular-nums;color:#9a9a9a">${fail}</td>
@@ -1787,6 +1834,15 @@ function switchPool(pool) {
     renderTable();
   });
 }
+function switchOidc(mode) {
+  preserveScroll(() => {
+    curOidc = mode || 'all';
+    curPage = 1;
+    sel.clear();
+    renderFilters();
+    renderTable();
+  });
+}
 function prevPage() { if (curPage > 1) { curPage--; renderTable(); } }
 function nextPage() {
   const pages = Math.max(1, Math.ceil(getTokenView().filteredItems.length / pageSize));
@@ -1853,6 +1909,12 @@ function statusBadge(s) {
   };
   const [cls, label] = m[s] || ['badge-invalid', s || tr('account.unknown', null, '未知')];
   return `<span class="badge ${cls}">${label}</span>`;
+}
+function oidcBadge(hasOidc) {
+  if (hasOidc) {
+    return `<span class="badge badge-oidc-yes">${tr('account.oidcYes', null, '有')}</span>`;
+  }
+  return `<span class="badge badge-oidc-no">${tr('account.oidcNo', null, '无')}</span>`;
 }
 async function copy(t) {
   try { await navigator.clipboard.writeText(t); showToast(tr('account.copied', null, '已复制'), 'success'); }

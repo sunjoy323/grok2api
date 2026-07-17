@@ -220,8 +220,13 @@ async def _list_invalid_tokens(repo: "AccountRepository") -> list[str]:
 
 @router.get("/tokens")
 async def list_tokens(repo: "AccountRepository" = Depends(get_repo)):
-    """Return flat token list."""
-    return _json({"tokens": await _list_token_payloads(repo)})
+    """Return flat token list, annotated with has_oidc from disk cache."""
+    payloads = await _list_token_payloads(repo)
+    entries = _oidc_disk_entry_map()
+    for item in payloads:
+        tok = item.get("token") or ""
+        item["has_oidc"] = bool(tok and _oidc_has_entry(tok, entries))
+    return _json({"tokens": payloads})
 
 
 @router.post("/tokens")
