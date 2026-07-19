@@ -10,6 +10,12 @@ from app.platform.errors import UpstreamError
 from app.platform.logging.logger import logger
 from app.platform.config.snapshot import get_config
 from app.control.model.enums import ModeId
+from app.dataplane.reverse.protocol.sandbox_artifacts import (
+    base64_target_from_bash_command,
+    looks_like_base64,
+    merge_personality_with_artifact_hint,
+    paths_from_bash_command,
+)
 from app.dataplane.reverse.protocol.xai_chat_reasoning import ReasoningAggregator
 
 
@@ -67,8 +73,11 @@ def build_chat_payload(
     }
 
     custom = cfg.get_str("features.custom_instruction", "").strip()
-    if custom:
-        payload["customPersonality"] = custom
+    # Always attach artifact-retrieval hint so code_execution media can be
+    # materialised locally (sandbox paths alone are not downloadable).
+    personality = merge_personality_with_artifact_hint(custom)
+    if personality:
+        payload["customPersonality"] = personality
 
     if model_config_override:
         payload["responseMetadata"]["modelConfigOverride"] = model_config_override
@@ -232,6 +241,11 @@ class StreamAdapter:
         "thinking_buf",
         "text_buf",
         "image_urls",
+        "sandbox_media_paths",
+        "sandbox_media_b64",
+        "used_code_execution",
+        "_pending_base64_path",
+        "_last_bash_command",
     )
 
     def __init__(self) -> None:
@@ -253,6 +267,12 @@ class StreamAdapter:
         self.thinking_buf: list[str] = []
         self.text_buf: list[str] = []
         self.image_urls: list[tuple[str, str]] = []   # [(url, imageUuid), ...]
+        # code_execution / bash sandbox media harvest
+        self.sandbox_media_paths: set[str] = set()
+        self.sandbox_media_b64: dict[str, str] = {}
+        self.used_code_execution: bool = False
+        self._pending_base64_path: str | None = None
+        self._last_bash_command: str = ""
 
     # 搜索信源追加：当配置启用且有 webSearchResults 时，格式化为 ## Sources 段落
     # 标记行 [grok2api-sources]: # 是 markdown link reference definition，渲染器不显示，
@@ -316,6 +336,11 @@ class StreamAdapter:
         if card_raw:
             events.extend(self._handle_card(card_raw))
 
+        # Late/fallback image harvest from modelResponse (fileAttachments etc.)
+        model_response = resp.get("modelResponse")
+        if isinstance(model_response, dict):
+            self._harvest_model_response_images(model_response)
+
         # ── 采集 webSearchResults（搜索信源，多帧累积去重）───────
         wsr = resp.get("webSearchResults")
         if wsr and isinstance(wsr, dict):
@@ -350,6 +375,7 @@ class StreamAdapter:
         step_id = resp.get("messageStepId")
 
         if tag == "tool_usage_card":
+            self._track_sandbox_tool_card(resp)
             # 正文已开始后的迟到 tool card：静默丢弃
             if self._content_started:
                 return events
@@ -377,11 +403,16 @@ class StreamAdapter:
 
         # ── raw_function_result ───────────────────────────────────
         if tag == "raw_function_result":
+            self._harvest_code_execution_result(resp)
             return events
 
         # ── toolUsageCardId-only follow-up frame ──────────────────
         if resp.get("toolUsageCardId") and not resp.get("webSearchResults") and not resp.get("codeExecutionResult"):
             return events
+
+        # Harvest codeExecutionResult on any frame that carries it
+        if resp.get("codeExecutionResult") is not None:
+            self._harvest_code_execution_result(resp)
 
         # ── 思维链 token 处理 ──────────────────────────────────────
         if token is not None and think is True:
@@ -472,20 +503,73 @@ class StreamAdapter:
         chunk = jd.get("image_chunk")
         if chunk:
             progress = chunk.get("progress")
-            uuid = chunk.get("imageUuid", "")
+            uuid = str(chunk.get("imageUuid") or "")
             events: list[FrameEvent] = []
             try:
                 if progress is not None:
                     events.append(FrameEvent("image_progress", str(int(progress)), uuid))
             except (TypeError, ValueError):
                 pass
-            if chunk.get("progress") == 100 and not chunk.get("moderated"):
-                url = _IMAGE_BASE + chunk["imageUrl"]
-                self.image_urls.append((url, uuid))
-                events.append(FrameEvent("image", url, uuid))
+            # Accept progress>=100 (some payloads use 100.0 / true completion)
+            try:
+                progress_i = int(progress) if progress is not None else -1
+            except (TypeError, ValueError):
+                progress_i = -1
+            if progress_i >= 100 and not chunk.get("moderated"):
+                raw_url = chunk.get("imageUrl") or ""
+                if isinstance(raw_url, str) and raw_url.strip():
+                    url = raw_url if raw_url.startswith("http") else _IMAGE_BASE + raw_url.lstrip("/")
+                    # de-dupe by uuid / url
+                    if not any(u == url or i == uuid for u, i in self.image_urls):
+                        self.image_urls.append((url, uuid or url))
+                        events.append(FrameEvent("image", url, uuid or url))
             return events
 
         return []
+
+    def _harvest_model_response_images(self, model_response: dict[str, Any]) -> None:
+        """Fallback: pull finished images from modelResponse when card stream is incomplete."""
+        existing_ids = {img_id for _, img_id in self.image_urls}
+        existing_urls = {url for url, _ in self.image_urls}
+
+        for item in model_response.get("generatedImageUrls") or []:
+            if not isinstance(item, str) or not item.strip():
+                continue
+            url = item if item.startswith("http") else _IMAGE_BASE + item.lstrip("/")
+            if url in existing_urls:
+                continue
+            img_id = url.rstrip("/").rsplit("/", 1)[-1].split(".", 1)[0] or url
+            self.image_urls.append((url, img_id))
+            existing_urls.add(url)
+            existing_ids.add(img_id)
+
+        # fileAttachments often hold asset UUIDs for generated images
+        user_id = None
+        for url, _ in self.image_urls:
+            # users/<userId>/generated/<uuid>/...
+            m = re.search(r"/users/([0-9a-fA-F-]{16,})/", url)
+            if m:
+                user_id = m.group(1)
+                break
+
+        for att in model_response.get("fileAttachments") or []:
+            if not isinstance(att, str) or not att.strip():
+                continue
+            fid = att.strip()
+            if fid in existing_ids:
+                continue
+            if fid.startswith("http") or fid.startswith("users/"):
+                url = fid if fid.startswith("http") else _IMAGE_BASE + fid.lstrip("/")
+            elif user_id:
+                url = f"{_IMAGE_BASE}users/{user_id}/generated/{fid}/image.jpg"
+            else:
+                # last resort — may still download via assets CDN path
+                url = f"{_IMAGE_BASE}{fid}/content"
+            if url in existing_urls:
+                continue
+            self.image_urls.append((url, fid))
+            existing_urls.add(url)
+            existing_ids.add(fid)
 
     # ------------------------------------------------------------------
     # Token cleaning — <grok:render> → markdown
@@ -659,6 +743,75 @@ class StreamAdapter:
         lowered = re.sub(r"https?://\S+", "", lowered)
         lowered = re.sub(r"[^\w\u4e00-\u9fff]+", "", lowered)
         return lowered
+
+    # ------------------------------------------------------------------
+    # Sandbox media harvest (code_execution / bash artifacts)
+    # ------------------------------------------------------------------
+
+    def _track_sandbox_tool_card(self, resp: dict[str, Any]) -> None:
+        """Record artifact media paths / pending base64 targets from tool cards."""
+        card = resp.get("toolUsageCard")
+        if not isinstance(card, dict):
+            return
+        command = ""
+        bash = card.get("bash")
+        if isinstance(bash, dict):
+            self.used_code_execution = True
+            args = bash.get("args")
+            if isinstance(args, dict):
+                command = str(args.get("command") or "")
+        if not command:
+            # other shapes: tool name key with args.command
+            for key, value in card.items():
+                if key in {"toolUsageCardId", "intent"} or not isinstance(value, dict):
+                    continue
+                # bash / code_execution / python etc.
+                key_l = str(key).lower()
+                if any(x in key_l for x in ("bash", "code", "python", "shell", "terminal")):
+                    self.used_code_execution = True
+                args = value.get("args")
+                if isinstance(args, dict) and args.get("command"):
+                    command = str(args.get("command") or "")
+                    break
+        if not command:
+            return
+        self.used_code_execution = True
+        self._last_bash_command = command
+        for path in paths_from_bash_command(command):
+            self.sandbox_media_paths.add(path)
+        target = base64_target_from_bash_command(command)
+        if target:
+            self._pending_base64_path = target
+            self.sandbox_media_paths.add(target)
+
+    @property
+    def should_buffer_final_text(self) -> bool:
+        """Buffer final answer when code_execution may dump base64 media."""
+        return bool(
+            self.used_code_execution
+            or self.sandbox_media_paths
+            or self.sandbox_media_b64
+        )
+
+    def _harvest_code_execution_result(self, resp: dict[str, Any]) -> None:
+        """Capture base64 stdout produced for a pending sandbox media path."""
+        cer = resp.get("codeExecutionResult")
+        if not isinstance(cer, dict):
+            return
+        stdout = str(cer.get("stdout") or "")
+        if not stdout or not looks_like_base64(stdout.strip()):
+            return
+        b64 = re.sub(r"\s+", "", stdout.strip())
+        path = self._pending_base64_path
+        if path is None and self.sandbox_media_paths:
+            # associate with the most recently tracked path
+            path = next(reversed(list(self.sandbox_media_paths)))
+        if path is None:
+            # keep under a synthetic key for later association by extension
+            path = f"/home/workdir/artifacts/stdout_{len(self.sandbox_media_b64)}.bin"
+            self.sandbox_media_paths.add(path)
+        self.sandbox_media_b64[path] = b64
+        self._pending_base64_path = None
 
 
 __all__ = [

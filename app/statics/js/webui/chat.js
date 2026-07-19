@@ -137,12 +137,26 @@
   function renderInlineMarkdown(source) {
     let html = escapeHtml(source);
     html = html.replace(/`([^`]+)`/g, (_, code) => `<code>${code}</code>`);
+    // Images first: ![alt](url) → <img>  (must run before generic [label](url) → <a>)
+    html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, href) => {
+      const safeHref = sanitizeUrl(String(href || '').trim());
+      if (!safeHref) return escapeHtml(alt || '');
+      const safeAlt = escapeHtml(String(alt || 'image'));
+      return `<img src="${escapeHtml(safeHref)}" alt="${safeAlt}" loading="lazy">`;
+    });
     html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, href) => {
-      const safeHref = sanitizeUrl(href.trim());
-      const safeLabel = label.trim() || href.trim();
-      return safeHref
-        ? `<a href="${escapeHtml(safeHref)}" target="_blank" rel="noreferrer">${safeLabel}</a>`
-        : safeLabel;
+      const rawHref = String(href || '').trim();
+      const safeHref = sanitizeUrl(rawHref);
+      const safeLabel = label.trim() || rawHref;
+      if (!safeHref) return safeLabel;
+      // Media URLs linked as [text](url) still render as media, not plain anchors
+      if (isImageUrl(safeHref)) {
+        return `<img src="${escapeHtml(safeHref)}" alt="${escapeHtml(safeLabel)}" loading="lazy">`;
+      }
+      if (isVideoUrl(safeHref)) {
+        return `<video controls preload="metadata" src="${escapeHtml(safeHref)}"></video>`;
+      }
+      return `<a href="${escapeHtml(safeHref)}" target="_blank" rel="noreferrer">${safeLabel}</a>`;
     });
     html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     html = html.replace(/(^|[^\*])\*([^*]+)\*/g, '$1<em>$2</em>');
@@ -296,6 +310,8 @@
   function isImageUrl(value) {
     const normalized = String(value || '').trim().toLowerCase();
     return normalized.includes('/v1/files/image')
+      || /assets\.grok\.com\//i.test(normalized)
+      || /imagine-public/i.test(normalized)
       || /\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/.test(normalized)
       || normalized.startsWith('data:image/');
   }
@@ -303,17 +319,46 @@
   function isVideoUrl(value) {
     const normalized = String(value || '').trim().toLowerCase();
     return normalized.includes('/v1/files/video')
-      || /\.(mp4|webm|mov|m4v|ogg)(\?|#|$)/.test(normalized);
+      || /\.(mp4|webm|mov|m4v|ogg)(\?|#|$)/.test(normalized)
+      || normalized.startsWith('data:video/');
+  }
+
+  function stripRawBase64Dumps(source) {
+    // Safety net: hide accidental base64 dumps that slipped past the server.
+    let text = String(source || '');
+    text = text.replace(/B64_FILE:[^\s:]+:[A-Za-z0-9+/=\s]{32,}/gi, '');
+    text = text.replace(/B64:[A-Za-z0-9+/=\s]{64,}/gi, '');
+    text = text.replace(/```(?:base64|text|plain|bin|mp4|data)?\s*\n[A-Za-z0-9+/=\s]{64,}\n```/gi, '');
+    text = text.replace(/^[A-Za-z0-9+/]{80,}={0,2}\s*$/gm, '');
+    text = text.replace(/data:video\/[\w.+-]+;base64,[A-Za-z0-9+/=]+/gi, '');
+    text = text.replace(/\n{3,}/g, '\n\n');
+    return text.trim();
   }
 
   function normalizeMediaContent(source) {
-    const input = String(source || '').replace(/\[video\]\(([^)]+)\)/gi, '$1');
-    return input.replace(/^(https?:\/\/\S+|\/v1\/files\/(?:image|video)\?id=\S+|data:image\/[^\s]+)$/gm, (match) => {
-      const url = match.trim();
-      if (isImageUrl(url)) return `![image](${url})`;
-      if (isVideoUrl(url)) return `<video controls preload="metadata" src="${escapeHtml(url)}"></video>`;
-      return match;
+    let input = stripRawBase64Dumps(source);
+    input = input.replace(/\[video\]\(([^)]+)\)/gi, '$1');
+    // Convert [label](media-url) → image/video markdown before generic link render
+    input = input.replace(/\[([^\]]*)\]\(([^)]+)\)/g, (full, label, href) => {
+      const url = String(href || '').trim();
+      if (isImageUrl(url)) return `![${label || 'image'}](${url})`;
+      if (isVideoUrl(url)) return `<video controls preload="metadata" src="${url}"></video>`;
+      return full;
     });
+    // Bare media URLs on their own line (or mid-paragraph after whitespace)
+    input = input.replace(
+      /(^|[\s(])((?:https?:\/\/|\/)[^\s<>\[\]()'"]+)/g,
+      (full, prefix, url) => {
+        const cleaned = url.replace(/[.,;:!?)]+$/, '');
+        const trailing = url.slice(cleaned.length);
+        if (isImageUrl(cleaned)) return `${prefix}![image](${cleaned})${trailing}`;
+        if (isVideoUrl(cleaned)) {
+          return `${prefix}<video controls preload="metadata" src="${cleaned}"></video>${trailing}`;
+        }
+        return full;
+      }
+    );
+    return input;
   }
 
   function isNativeGrokMediaUrl(value) {
@@ -349,6 +394,26 @@
   }
 
   function enhanceMediaElements(card) {
+    // Upgrade residual media anchors to real media elements
+    card.querySelectorAll('a[href]').forEach((anchor) => {
+      const href = anchor.getAttribute('href') || '';
+      if (isImageUrl(href)) {
+        const img = document.createElement('img');
+        img.src = href;
+        img.alt = (anchor.textContent || 'image').trim() || 'image';
+        img.loading = 'lazy';
+        anchor.replaceWith(img);
+        return;
+      }
+      if (isVideoUrl(href)) {
+        const video = document.createElement('video');
+        video.controls = true;
+        video.preload = 'metadata';
+        video.src = href;
+        anchor.replaceWith(video);
+      }
+    });
+
     card.querySelectorAll('video').forEach((video) => {
       if (video.dataset.proxyHintBound === '1') return;
       video.dataset.proxyHintBound = '1';
@@ -559,7 +624,9 @@
     }
 
     if (role === 'assistant') {
-      card.innerHTML = renderRichMarkdown(content);
+      // Ensure image markdown is on its own line for robust parsing
+      const normalized = String(content || '').replace(/([^\n])(!\[[^\]]*\]\([^)]+\))/g, '$1\n\n$2');
+      card.innerHTML = renderRichMarkdown(normalized);
       enhanceMediaElements(card);
       return;
     }
