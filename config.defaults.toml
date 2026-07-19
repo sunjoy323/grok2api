@@ -38,6 +38,10 @@ thinking_summary = false
 dynamic_statsig = true
 # 是否允许生成 NSFW 图片
 enable_nsfw = true
+# 用量统计（hour × model × api_key，内存聚合后定期落盘）
+usage_stats_enabled = false
+usage_stats_flush_sec = 60           # 30 或 60
+usage_stats_retention_days = 90
 # 账号导入/注册后是否自动 SSO→OIDC（cli-chat / grok-4.5，device flow）
 auto_oidc_on_import = true
 # 后台队列：并发批量 SSO→OIDC（device flow；workers 过大易 429）

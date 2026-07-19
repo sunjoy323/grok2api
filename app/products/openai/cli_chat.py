@@ -31,6 +31,7 @@ from app.platform.runtime.clock import now_s
 from app.platform.tokens import estimate_prompt_tokens, estimate_tokens
 from app.products._account_selection import reserve_account, selection_max_retries
 from app.products.openai.chat import _configured_retry_codes, _should_retry_upstream
+from app.platform.usage_stats import record_usage
 from ._format import (
     build_usage,
     make_chat_response,
@@ -233,6 +234,7 @@ async def completions(
                             or estimate_tokens(adapter.full_text + adapter.full_reasoning)
                         )
                         usage = build_usage(prompt_tokens, completion_tokens)
+                        record_usage(model, usage, ok=True)
 
                         if tools_out:
                             done = make_tool_call_done_chunk(
@@ -363,6 +365,7 @@ async def completions(
                     or estimate_tokens(adapter.full_text + adapter.full_reasoning)
                 )
                 usage = build_usage(prompt_tokens, completion_tokens)
+                record_usage(model, usage, ok=True)
 
                 if adapter.tool_calls:
                     parsed = [

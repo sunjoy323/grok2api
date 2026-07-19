@@ -18,6 +18,7 @@
   },
   "header": {
     "account": "账户管理",
+    "stats": "用量统计",
     "config": "配置管理",
     "cache": "缓存管理",
     "languageLabel": "语言",
@@ -327,9 +328,7 @@
       "disabled": "禁用",
       "expired": "过期",
       "invalid": "异常"
-    },
-    "autoNsfwOnImport": "导入后自动开启 NSFW",
-    "autoNsfwHint": "需要额外时间检测账户状态"
+    }
   },
   "config": {
     "pageTitle": "Grok2API - 配置管理",
@@ -459,6 +458,18 @@
         "showSearchSources": {
           "label": "正文追加信源",
           "desc": "搜索信源始终以 search_sources 字段输出。此选项控制是否同时在正文末尾追加 ## Sources 段落（兼容文本解析客户端）。"
+        },
+        "usageStatsEnabled": {
+          "label": "启用用量统计",
+          "desc": "按小时 × 模型 × API Key 聚合 token 用量；关闭后热路径完全跳过统计。"
+        },
+        "usageStatsFlushSec": {
+          "label": "统计落盘间隔(秒)",
+          "desc": "内存聚合写入磁盘的间隔，建议 30 或 60。"
+        },
+        "usageStatsRetentionDays": {
+          "label": "统计保留天数",
+          "desc": "小时粒度数据的最长保留天数，过期自动清理。"
         },
         "customInstruction": {
           "label": "全局附加指令",
@@ -722,5 +733,41 @@
     "startFailed": "启动失败：{message}",
     "cancelInProgress": "已暂停，请耐心等待本批次完成…",
     "na": "—"
+  },
+  "stats": {
+    "pageTitle": "Grok2API - 用量统计",
+    "pageHeading": "用量统计",
+    "pageSubtitle": "按小时 × 模型 × API Key 汇总；页面可切换为按日聚合。",
+    "actionFlush": "立即落盘",
+    "actionRefresh": "刷新",
+    "enabled": "统计已开启",
+    "disabled": "统计已关闭",
+    "disabledHint": "用量统计当前已关闭。请在「配置管理 → 应用功能」中开启「启用用量统计」。",
+    "statRequests": "请求数",
+    "statPrompt": "Prompt Tokens",
+    "statCompletion": "Completion Tokens",
+    "statTotal": "Total Tokens",
+    "successRate": "成功率 {n}%",
+    "pendingBuckets": "内存待落盘 {n} 桶",
+    "filterRange": "时间范围",
+    "filterGranularity": "粒度",
+    "filterModel": "模型",
+    "filterKey": "API Key",
+    "filterAll": "全部",
+    "granularityHour": "按小时",
+    "granularityDay": "按天",
+    "colTime": "时间",
+    "colModel": "模型",
+    "colKey": "API Key",
+    "colRequests": "请求",
+    "colSuccess": "成功",
+    "colErrors": "失败",
+    "colPrompt": "Prompt",
+    "colCompletion": "Completion",
+    "colTotal": "Total",
+    "empty": "暂无数据",
+    "loadFailed": "加载失败",
+    "flushDone": "已落盘 {n} 个桶",
+    "flushFailed": "落盘失败"
   }
 }

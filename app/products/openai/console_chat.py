@@ -33,6 +33,7 @@ from app.dataplane.reverse.protocol.xai_console_chat import (
 )
 from app.products._account_selection import reserve_account, selection_max_retries
 from app.products.openai.chat import _configured_retry_codes, _should_retry_upstream
+from app.platform.usage_stats import record_usage
 from ._format import (
     make_response_id,
     make_stream_chunk,
@@ -208,6 +209,7 @@ async def completions(
                                 else estimate_tool_call_tokens(tool_calls)
                             )
                             usage = build_usage(prompt_tokens, tool_completion_tokens)
+                            record_usage(model, usage, ok=True)
                             final = make_tool_call_done_chunk(response_id, model, usage=usage)
                             yield f"data: {orjson.dumps(final).decode()}\n\n"
                             yield "data: [DONE]\n\n"
@@ -224,6 +226,7 @@ async def completions(
                                 yield f"data: {orjson.dumps(chunk).decode()}\n\n"
 
                         usage = build_usage(prompt_tokens, completion_tokens)
+                        record_usage(model, usage, ok=True)
                         final = make_stream_chunk(
                             response_id, model, "", is_final=True
                         )
@@ -326,6 +329,7 @@ async def completions(
                         else estimate_tool_call_tokens(tool_calls)
                     )
                     usage = build_usage(prompt_tokens, tool_completion_tokens)
+                    record_usage(model, usage, ok=True)
                     result = make_tool_call_response(
                         model,
                         tool_calls,
@@ -341,6 +345,7 @@ async def completions(
                     return result
 
                 usage = build_usage(prompt_tokens, completion_tokens)
+                record_usage(model, usage, ok=True)
                 result = make_chat_response(
                     model, adapter.full_text, response_id=response_id, usage=usage
                 )

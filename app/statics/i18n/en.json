@@ -18,6 +18,7 @@
   },
   "header": {
     "account": "Account Management",
+    "stats": "Usage Stats",
     "config": "Configuration Management",
     "cache": "Cache Management",
     "languageLabel": "Language",
@@ -327,9 +328,7 @@
       "disabled": "Disabled",
       "expired": "Expired",
       "invalid": "Abnormal"
-    },
-    "autoNsfwOnImport": "Auto-enable NSFW after import",
-    "autoNsfwHint": "Requires additional time to detect account status"
+    }
   },
   "config": {
     "pageTitle": "Grok2API - Configuration Management",
@@ -648,6 +647,18 @@
         "logMaxFiles": {
           "label": "Log Retention (days)",
           "desc": "Maximum number of daily log files to keep during rotation. Default: 7."
+        },
+        "usageStatsEnabled": {
+          "label": "Enable usage stats",
+          "desc": "Aggregate token usage by hour × model × API key. When off, the hot path skips stats entirely."
+        },
+        "usageStatsFlushSec": {
+          "label": "Stats flush interval (sec)",
+          "desc": "How often in-memory counters are written to disk. Prefer 30 or 60."
+        },
+        "usageStatsRetentionDays": {
+          "label": "Stats retention days",
+          "desc": "Hourly rows older than this are deleted automatically."
         }
       }
     }
@@ -722,5 +733,41 @@
     "startFailed": "Failed to start: {message}",
     "cancelInProgress": "Cancellation requested. Wait for the current batch to finish.",
     "na": "—"
+  },
+  "stats": {
+    "pageTitle": "Grok2API - Usage Stats",
+    "pageHeading": "Usage Stats",
+    "pageSubtitle": "Aggregated by hour × model × API key; switch granularity to view daily totals.",
+    "actionFlush": "Flush Now",
+    "actionRefresh": "Refresh",
+    "enabled": "Stats enabled",
+    "disabled": "Stats disabled",
+    "disabledHint": "Usage stats are off. Enable them under Configuration → Features.",
+    "statRequests": "Requests",
+    "statPrompt": "Prompt Tokens",
+    "statCompletion": "Completion Tokens",
+    "statTotal": "Total Tokens",
+    "successRate": "Success rate {n}%",
+    "pendingBuckets": "{n} buckets pending flush",
+    "filterRange": "Range",
+    "filterGranularity": "Granularity",
+    "filterModel": "Model",
+    "filterKey": "API Key",
+    "filterAll": "All",
+    "granularityHour": "Hourly",
+    "granularityDay": "Daily",
+    "colTime": "Time",
+    "colModel": "Model",
+    "colKey": "API Key",
+    "colRequests": "Requests",
+    "colSuccess": "Success",
+    "colErrors": "Errors",
+    "colPrompt": "Prompt",
+    "colCompletion": "Completion",
+    "colTotal": "Total",
+    "empty": "No data yet",
+    "loadFailed": "Failed to load",
+    "flushDone": "Flushed {n} buckets",
+    "flushFailed": "Flush failed"
   }
 }

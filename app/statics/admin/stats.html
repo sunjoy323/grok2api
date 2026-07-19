@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title data-i18n="stats.pageTitle">Grok2API - 用量统计</title>
+  <link rel="icon" href="/favicon.ico?v={{APP_VERSION}}">
+  <link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
+  <link href="/static/css/app.css?v={{APP_VERSION}}" rel="stylesheet">
+  <style>
+    body { background: #FAF9F5 }
+    .page-hd { display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:20px; gap:12px; flex-wrap:wrap }
+    .page-title { font-size:22px; font-weight:700; line-height:1.2 }
+    .page-sub { font-size:13px; color:var(--fg-muted); margin-top:5px }
+    .page-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap }
+    .page-action-btn {
+      height:32px; padding:0 14px; border-radius:999px;
+      display:inline-flex; align-items:center; justify-content:center; gap:6px;
+      font-size:13px; font-weight:600;
+      border:1px solid #e6e6e6; background:#fafafa; color:#444;
+      cursor:pointer;
+    }
+    .page-action-btn:hover { background:#f3f3f3; border-color:#dcdcdc }
+    .page-action-btn-primary { background:#111; border-color:#111; color:#fff }
+    .page-action-btn-primary:hover { background:#222; border-color:#222 }
+    .stat-grid { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:12px; margin-bottom:18px }
+    @media (max-width: 960px) { .stat-grid { grid-template-columns:repeat(2, minmax(0, 1fr)) } }
+    .stat-cell { min-height:88px; padding:14px 16px; border-radius:12px; background:#fff; display:flex; flex-direction:column; gap:10px }
+    .stat-label { font-size:11px; color:#8a8a8a }
+    .stat-num { font-size:22px; font-weight:600; line-height:1; letter-spacing:-.02em; margin-top:auto; font-variant-numeric:tabular-nums }
+    .stat-sub { font-size:11px; color:#8a8a8a; font-variant-numeric:tabular-nums }
+    .banner {
+      display:none; margin-bottom:14px; padding:12px 14px; border-radius:12px;
+      background:#fbf5ed; color:#8a5a2b; font-size:13px;
+    }
+    .banner.show { display:block }
+    .filters {
+      display:flex; flex-wrap:wrap; gap:10px; align-items:flex-end;
+      margin-bottom:16px; padding:14px 16px; border-radius:12px; background:#fff;
+    }
+    .filter-field { display:flex; flex-direction:column; gap:6px; min-width:120px }
+    .filter-field label { font-size:11px; color:#8a8a8a }
+    .filter-field select, .filter-field input {
+      height:32px; border:1px solid #e6e6e6; border-radius:8px; background:#fafafa;
+      padding:0 10px; font-size:13px; color:#333;
+    }
+    .table-card { background:#fff; border-radius:12px; overflow:auto }
+    table { width:100%; border-collapse:collapse; font-size:13px }
+    th, td { padding:10px 12px; border-bottom:1px solid #f0f0f0; text-align:left; white-space:nowrap }
+    th { font-size:11px; color:#8a8a8a; font-weight:600; background:#fafafa; position:sticky; top:0 }
+    td.num { text-align:right; font-variant-numeric:tabular-nums; color:#444 }
+    tr:hover td { background:#fdfdfd }
+    .empty-state { text-align:center; color:#9a9a9a; padding:36px 12px }
+    .badge {
+      display:inline-flex; align-items:center; height:20px; padding:0 8px;
+      border-radius:999px; font-size:11px; font-weight:500; background:#f5f0ff; color:#7c3aed;
+    }
+    .badge.on { background:#f2f8f4; color:#3e8f69 }
+    .badge.off { background:#fbf3f2; color:#b66a63 }
+  </style>
+</head>
+<body>
+  <div id="admin-header"></div>
+  <main class="admin-main">
+    <div class="page-hd">
+      <div>
+        <div class="page-title" data-i18n="stats.pageHeading">用量统计</div>
+        <div class="page-sub" data-i18n="stats.pageSubtitle">按小时 × 模型 × API Key 汇总；页面可切换为按日聚合。</div>
+      </div>
+      <div class="page-actions">
+        <span class="badge off" id="stats-enabled-badge">—</span>
+        <button type="button" class="page-action-btn" id="btn-flush" onclick="doFlush()" data-i18n="stats.actionFlush">立即落盘</button>
+        <button type="button" class="page-action-btn page-action-btn-primary" id="btn-refresh" onclick="loadData()" data-i18n="stats.actionRefresh">刷新</button>
+      </div>
+    </div>
+
+    <div class="banner" id="disabled-banner" data-i18n="stats.disabledHint">
+      用量统计当前已关闭。请在「配置管理 → 应用功能」中开启「启用用量统计」。
+    </div>
+
+    <div class="stat-grid">
+      <div class="stat-cell">
+        <div class="stat-label" data-i18n="stats.statRequests">请求数</div>
+        <div class="stat-num" id="s-requests">0</div>
+        <div class="stat-sub" id="s-success-rate">—</div>
+      </div>
+      <div class="stat-cell">
+        <div class="stat-label" data-i18n="stats.statPrompt">Prompt Tokens</div>
+        <div class="stat-num" id="s-prompt">0</div>
+      </div>
+      <div class="stat-cell">
+        <div class="stat-label" data-i18n="stats.statCompletion">Completion Tokens</div>
+        <div class="stat-num" id="s-completion">0</div>
+      </div>
+      <div class="stat-cell">
+        <div class="stat-label" data-i18n="stats.statTotal">Total Tokens</div>
+        <div class="stat-num" id="s-total">0</div>
+        <div class="stat-sub" id="s-pending"></div>
+      </div>
+    </div>
+
+    <div class="filters">
+      <div class="filter-field">
+        <label data-i18n="stats.filterRange">时间范围</label>
+        <select id="f-range" onchange="loadData()">
+          <option value="24">24h</option>
+          <option value="72">3d</option>
+          <option value="168" selected>7d</option>
+          <option value="720">30d</option>
+        </select>
+      </div>
+      <div class="filter-field">
+        <label data-i18n="stats.filterGranularity">粒度</label>
+        <select id="f-granularity" onchange="loadData()">
+          <option value="hour" selected data-i18n="stats.granularityHour">按小时</option>
+          <option value="day" data-i18n="stats.granularityDay">按天</option>
+        </select>
+      </div>
+      <div class="filter-field">
+        <label data-i18n="stats.filterModel">模型</label>
+        <select id="f-model" onchange="loadData()">
+          <option value="">全部</option>
+        </select>
+      </div>
+      <div class="filter-field">
+        <label data-i18n="stats.filterKey">API Key</label>
+        <select id="f-key" onchange="loadData()">
+          <option value="">全部</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="table-card">
+      <table>
+        <thead>
+          <tr>
+            <th data-i18n="stats.colTime">时间</th>
+            <th data-i18n="stats.colModel">模型</th>
+            <th data-i18n="stats.colKey">API Key</th>
+            <th class="num" data-i18n="stats.colRequests">请求</th>
+            <th class="num" data-i18n="stats.colSuccess">成功</th>
+            <th class="num" data-i18n="stats.colErrors">失败</th>
+            <th class="num" data-i18n="stats.colPrompt">Prompt</th>
+            <th class="num" data-i18n="stats.colCompletion">Completion</th>
+            <th class="num" data-i18n="stats.colTotal">Total</th>
+          </tr>
+        </thead>
+        <tbody id="tbody">
+          <tr><td colspan="9" class="empty-state" data-i18n="stats.empty">暂无数据</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+
+  <script src="/static/js/i18n.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/auth.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/admin-header.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
+  <script src="/static/js/footer.js?v={{APP_VERSION}}"></script>
+  <script>
+function tr(key, params, fallback) {
+  const value = t(key, params);
+  return value === key ? (fallback ?? key) : value;
+}
+
+function fmt(n) {
+  n = Number(n) || 0;
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e4) return (n / 1e3).toFixed(1) + 'k';
+  return String(n);
+}
+
+function xe(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+async function _api(method, path, body) {
+  const key = await adminKey.get();
+  const r = await fetch(ADMIN_API + path, {
+    method,
+    headers: {
+      ...(body != null && { 'Content-Type': 'application/json' }),
+      Authorization: `Bearer ${key}`,
+    },
+    ...(body != null && { body: JSON.stringify(body) }),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || r.status);
+  }
+  return r.json();
+}
+
+function applyStatsI18n() {
+  document.title = tr('stats.pageTitle', null, 'Grok2API - 用量统计');
+  if (window.I18n?.apply) I18n.apply(document);
+}
+
+async function loadFilters() {
+  try {
+    const d = await _api('GET', '/usage/filters');
+    const modelSel = document.getElementById('f-model');
+    const keySel = document.getElementById('f-key');
+    const curModel = modelSel.value;
+    const curKey = keySel.value;
+    modelSel.innerHTML = `<option value="">${xe(tr('stats.filterAll', null, '全部'))}</option>` +
+      (d.models || []).map(m => `<option value="${xe(m)}">${xe(m)}</option>`).join('');
+    keySel.innerHTML = `<option value="">${xe(tr('stats.filterAll', null, '全部'))}</option>` +
+      (d.keys || []).map(k => `<option value="${xe(k.key_id)}">${xe(k.key_label || k.key_id)}</option>`).join('');
+    if (curModel) modelSel.value = curModel;
+    if (curKey) keySel.value = curKey;
+  } catch (e) {
+    console.warn(e);
+  }
+}
+
+async function loadData() {
+  const hours = Number(document.getElementById('f-range').value) || 168;
+  const granularity = document.getElementById('f-granularity').value || 'hour';
+  const model = document.getElementById('f-model').value || '';
+  const keyId = document.getElementById('f-key').value || '';
+  const qs = new URLSearchParams({ hours: String(hours), granularity });
+  if (model) qs.set('model', model);
+  if (keyId) qs.set('key_id', keyId);
+
+  try {
+    const d = await _api('GET', '/usage/summary?' + qs.toString());
+    const enabled = !!d.enabled;
+    const badge = document.getElementById('stats-enabled-badge');
+    badge.className = 'badge ' + (enabled ? 'on' : 'off');
+    badge.textContent = enabled
+      ? tr('stats.enabled', null, '统计已开启')
+      : tr('stats.disabled', null, '统计已关闭');
+    document.getElementById('disabled-banner').classList.toggle('show', !enabled);
+
+    const tot = d.totals || {};
+    document.getElementById('s-requests').textContent = fmt(tot.requests);
+    document.getElementById('s-prompt').textContent = fmt(tot.prompt_tokens);
+    document.getElementById('s-completion').textContent = fmt(tot.completion_tokens);
+    document.getElementById('s-total').textContent = fmt(tot.total_tokens);
+    const req = Number(tot.requests) || 0;
+    const ok = Number(tot.success) || 0;
+    document.getElementById('s-success-rate').textContent = req
+      ? tr('stats.successRate', { n: Math.round(ok / req * 100) }, `成功率 ${Math.round(ok / req * 100)}%`)
+      : '—';
+    const pending = Number(d.pending_buckets) || 0;
+    document.getElementById('s-pending').textContent = pending
+      ? tr('stats.pendingBuckets', { n: pending }, `内存待落盘 ${pending} 桶`)
+      : '';
+
+    const rows = d.rows || [];
+    const tbody = document.getElementById('tbody');
+    if (!rows.length) {
+      tbody.innerHTML = `<tr><td colspan="9" class="empty-state">${xe(tr('stats.empty', null, '暂无数据'))}</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = rows.map(r => {
+      const time = r.day || r.hour_ts || '—';
+      return `<tr>
+        <td>${xe(time)}</td>
+        <td>${xe(r.model)}</td>
+        <td title="${xe(r.key_id)}">${xe(r.key_label || r.key_id)}</td>
+        <td class="num">${fmt(r.requests)}</td>
+        <td class="num">${fmt(r.success)}</td>
+        <td class="num">${fmt(r.errors)}</td>
+        <td class="num">${fmt(r.prompt_tokens)}</td>
+        <td class="num">${fmt(r.completion_tokens)}</td>
+        <td class="num">${fmt(r.total_tokens)}</td>
+      </tr>`;
+    }).join('');
+  } catch (e) {
+    showToast(`${tr('stats.loadFailed', null, '加载失败')}: ${e.message}`, 'error');
+  }
+}
+
+async function doFlush() {
+  try {
+    const d = await _api('POST', '/usage/flush');
+    showToast(
+      tr('stats.flushDone', { n: d.flushed_buckets || 0 }, `已落盘 ${d.flushed_buckets || 0} 个桶`),
+      'success'
+    );
+    await loadFilters();
+    await loadData();
+  } catch (e) {
+    showToast(`${tr('stats.flushFailed', null, '落盘失败')}: ${e.message}`, 'error');
+  }
+}
+
+(async () => {
+  await renderAdminHeader();
+  const key = await adminKey.get();
+  if (!key || !await verifyKey(ADMIN_API + '/verify', key).catch(() => false)) {
+    location.href = '/admin/login';
+    return;
+  }
+  applyStatsI18n();
+  window.addEventListener('languagechange', applyStatsI18n);
+  await loadFilters();
+  await loadData();
+})();
+  </script>
+</body>
+</html>

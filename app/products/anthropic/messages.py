@@ -35,6 +35,7 @@ from app.products.openai.chat import (
 )
 from app.products._account_selection import reserve_account, selection_max_retries
 from app.products.openai._tool_sieve import ToolSieve
+from app.platform.usage_stats import record_usage
 
 
 # ---------------------------------------------------------------------------
@@ -538,6 +539,12 @@ async def create(
                         yield _sse("message_stop", {"type": "message_stop"})
                         yield "data: [DONE]\n\n"
                         success = True
+                        record_usage(
+                            model,
+                            prompt_tokens=estimate_prompt_tokens(internal_message),
+                            completion_tokens=tool_output_tokens,
+                            ok=True,
+                        )
                         logger.info("messages stream tool_calls: attempt={}/{} model={}",
                                     attempt + 1, max_retries + 1, model)
                     else:
@@ -599,6 +606,12 @@ async def create(
                         yield _sse("message_stop", {"type": "message_stop"})
                         yield "data: [DONE]\n\n"
                         success = True
+                        record_usage(
+                            model,
+                            prompt_tokens=estimate_prompt_tokens(internal_message),
+                            completion_tokens=out_tokens,
+                            ok=True,
+                        )
                         logger.info(
                             "messages stream completed: attempt={}/{} model={} text_len={} think_len={} images={}",
                             attempt + 1, max_retries + 1, model,
@@ -752,6 +765,7 @@ async def create(
                     "input": parsed_input,
                 })
             ct = estimate_tool_call_tokens(tc_result.calls)
+            record_usage(model, prompt_tokens=in_tokens, completion_tokens=ct, ok=True)
             logger.info("messages tool_calls: model={} calls={}", model, len(tc_result.calls))
             resp = _build_message_response(msg_id, model, content, "tool_use", in_tokens, ct)
             # 注入结构化搜索信源（tool_use 场景）
@@ -765,6 +779,7 @@ async def create(
         model, len(full_text), len(full_think), len(adapter.image_urls),
     )
 
+    record_usage(model, prompt_tokens=in_tokens, completion_tokens=out_tokens, ok=True)
     content = [{"type": "text", "text": full_text}]
     anns = adapter.annotations_list()
     if anns:

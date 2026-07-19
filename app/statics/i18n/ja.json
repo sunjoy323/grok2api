@@ -144,7 +144,8 @@
     "versionUnavailable": "更新の確認に失敗しました。",
     "versionNotesEmpty": "リリースノートはありません。",
     "versionOpenRelease": "リリースを開く",
-    "versionClose": "閉じる"
+    "versionClose": "閉じる",
+    "stats": "Usage"
   },
   "account": {
     "pageTitle": "Grok2API - アカウント",
@@ -670,5 +671,41 @@
     "startFailed": "開始に失敗しました: {message}",
     "cancelInProgress": "キャンセルを要求しました。現在のバッチ完了までお待ちください。",
     "na": "—"
+  },
+  "stats": {
+    "pageTitle": "Grok2API - Usage Stats",
+    "pageHeading": "Usage Stats",
+    "pageSubtitle": "Aggregated by hour × model × API key; switch granularity to view daily totals.",
+    "actionFlush": "Flush Now",
+    "actionRefresh": "Refresh",
+    "enabled": "Stats enabled",
+    "disabled": "Stats disabled",
+    "disabledHint": "Usage stats are off. Enable them under Configuration → Features.",
+    "statRequests": "Requests",
+    "statPrompt": "Prompt Tokens",
+    "statCompletion": "Completion Tokens",
+    "statTotal": "Total Tokens",
+    "successRate": "Success rate {n}%",
+    "pendingBuckets": "{n} buckets pending flush",
+    "filterRange": "Range",
+    "filterGranularity": "Granularity",
+    "filterModel": "Model",
+    "filterKey": "API Key",
+    "filterAll": "All",
+    "granularityHour": "Hourly",
+    "granularityDay": "Daily",
+    "colTime": "Time",
+    "colModel": "Model",
+    "colKey": "API Key",
+    "colRequests": "Requests",
+    "colSuccess": "Success",
+    "colErrors": "Errors",
+    "colPrompt": "Prompt",
+    "colCompletion": "Completion",
+    "colTotal": "Total",
+    "empty": "No data yet",
+    "loadFailed": "Failed to load",
+    "flushDone": "Flushed {n} buckets",
+    "flushFailed": "Flush failed"
   }
 }

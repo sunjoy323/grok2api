@@ -28,6 +28,7 @@ from app.platform.errors import (
 from app.platform.logging.logger import logger
 from app.platform.runtime.clock import now_s
 from app.platform.storage import save_local_video
+from app.platform.usage_stats import record_usage
 from app.control.account.enums import FeedbackKind
 from app.control.model import registry as model_registry
 from app.control.model.registry import resolve as resolve_model
@@ -880,6 +881,7 @@ async def _run_video_job(
             )
             raw, _mime = await _download_video_bytes(token, artifact.video_url)
             success = True
+            record_usage(job.model, ok=True, prompt_tokens=0, completion_tokens=0)
         except BaseException as exc:
             fail_exc = exc
             raise
@@ -1126,6 +1128,7 @@ async def completions(
 
     content = await _run(progress_cb=_progress)
     reasoning = "\n".join(progress_updates) if progress_updates else None
+    record_usage(model, ok=True, prompt_tokens=0, completion_tokens=0)
     return make_chat_response(
         model,
         content,

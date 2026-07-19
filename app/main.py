@@ -296,6 +296,13 @@ async def lifespan(app: FastAPI):
         name="deleted-account-cleanup",
     ) if is_leader else None
 
+    # 8. Usage stats recorder (in-memory + periodic SQLite flush).
+    from app.platform.usage_stats import get_usage_recorder
+
+    usage_recorder = get_usage_recorder()
+    usage_recorder.start()
+    app.state.usage_recorder = usage_recorder
+
     logger.info("application startup completed")
     yield
 
@@ -303,6 +310,10 @@ async def lifespan(app: FastAPI):
     # Shutdown
     # -----------
     logger.info("application shutdown started")
+    try:
+        await usage_recorder.stop()
+    except Exception as exc:
+        logger.warning("usage stats shutdown failed: {}", exc)
     if console_reset_task is not None:
         console_reset_task.cancel()
         try:

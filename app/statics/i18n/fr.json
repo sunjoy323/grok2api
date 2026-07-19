@@ -144,7 +144,8 @@
     "versionUnavailable": "Échec de la vérification des mises à jour.",
     "versionNotesEmpty": "Aucune note de version disponible.",
     "versionOpenRelease": "Ouvrir la release",
-    "versionClose": "Fermer"
+    "versionClose": "Fermer",
+    "stats": "Usage"
   },
   "account": {
     "pageTitle": "Grok2API - Comptes",
@@ -670,5 +671,41 @@
     "startFailed": "Échec du démarrage : {message}",
     "cancelInProgress": "Annulation demandée. Veuillez patienter jusqu’à la fin du lot en cours.",
     "na": "—"
+  },
+  "stats": {
+    "pageTitle": "Grok2API - Usage Stats",
+    "pageHeading": "Usage Stats",
+    "pageSubtitle": "Aggregated by hour × model × API key; switch granularity to view daily totals.",
+    "actionFlush": "Flush Now",
+    "actionRefresh": "Refresh",
+    "enabled": "Stats enabled",
+    "disabled": "Stats disabled",
+    "disabledHint": "Usage stats are off. Enable them under Configuration → Features.",
+    "statRequests": "Requests",
+    "statPrompt": "Prompt Tokens",
+    "statCompletion": "Completion Tokens",
+    "statTotal": "Total Tokens",
+    "successRate": "Success rate {n}%",
+    "pendingBuckets": "{n} buckets pending flush",
+    "filterRange": "Range",
+    "filterGranularity": "Granularity",
+    "filterModel": "Model",
+    "filterKey": "API Key",
+    "filterAll": "All",
+    "granularityHour": "Hourly",
+    "granularityDay": "Daily",
+    "colTime": "Time",
+    "colModel": "Model",
+    "colKey": "API Key",
+    "colRequests": "Requests",
+    "colSuccess": "Success",
+    "colErrors": "Errors",
+    "colPrompt": "Prompt",
+    "colCompletion": "Completion",
+    "colTotal": "Total",
+    "empty": "No data yet",
+    "loadFailed": "Failed to load",
+    "flushDone": "Flushed {n} buckets",
+    "flushFailed": "Flush failed"
   }
 }

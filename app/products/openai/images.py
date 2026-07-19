@@ -17,6 +17,7 @@ from app.platform.config.snapshot import get_config
 from app.platform.errors import RateLimitError, UpstreamError, ValidationError
 from app.platform.runtime.clock import now_s
 from app.platform.storage import save_local_image
+from app.platform.usage_stats import record_usage
 from app.control.model.registry import resolve as resolve_model
 from app.control.model.enums import ModeId
 from app.control.model.spec import ModelSpec
@@ -461,6 +462,8 @@ async def generate(
             if kind in (FeedbackKind.UNAUTHORIZED, FeedbackKind.FORBIDDEN):
                 await _acct_dir.feedback(token, kind, _ws_mode_id)
 
+    record_usage(model, ok=True, prompt_tokens=0, completion_tokens=0)
+
     if chat_format:
         content = "\n\n".join(image.markdown_value for image in finals)
         reasoning = "\n".join(reasoning_updates) if reasoning_updates else None
@@ -578,6 +581,8 @@ async def _generate_lite(
             enabled=chat_format,
         ),
     )
+    record_usage(spec.model_name, ok=True, prompt_tokens=0, completion_tokens=0)
+
     if chat_format:
         content = "\n\n".join(image.markdown_value for image in images)
         reasoning = "\n".join(reasoning_updates) if reasoning_updates else None
@@ -1270,6 +1275,8 @@ async def edit(
             asyncio.create_task(_quota_sync(token, int(spec.mode_id)))
         else:
             asyncio.create_task(_fail_sync(token, int(spec.mode_id), fail_exc))
+
+    record_usage(model, ok=True, prompt_tokens=0, completion_tokens=0)
 
     if chat_format:
         content = "\n\n".join(image.markdown_value for image in images)

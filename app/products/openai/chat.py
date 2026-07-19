@@ -57,6 +57,7 @@ from ._format import (
 )
 from ._tool_sieve import ToolSieve
 from app.products._account_selection import reserve_account, selection_max_retries
+from app.platform.usage_stats import record_usage
 
 
 def _to_chat_annotations(anns: list[dict]) -> list[dict]:
@@ -603,6 +604,12 @@ async def completions(
                                             yield "data: [DONE]\n\n"
                                             tool_calls_emitted = True
                                             success = True
+                                            record_usage(
+                                                model,
+                                                prompt_tokens=estimate_prompt_tokens(message),
+                                                completion_tokens=estimate_tool_call_tokens(parsed_calls),
+                                                ok=True,
+                                            )
                                             logger.info(
                                                 "chat stream tool_calls: attempt={}/{} model={} call_count={}",
                                                 attempt + 1,
@@ -656,6 +663,12 @@ async def completions(
                                 yield "data: [DONE]\n\n"
                                 tool_calls_emitted = True
                                 success = True
+                                record_usage(
+                                    model,
+                                    prompt_tokens=estimate_prompt_tokens(message),
+                                    completion_tokens=estimate_tool_call_tokens(flushed_calls),
+                                    ok=True,
+                                )
                                 logger.info(
                                     "chat stream tool_calls (flushed): model={} call_count={}",
                                     model,
@@ -692,6 +705,15 @@ async def completions(
                             yield f"data: {orjson.dumps(final).decode()}\n\n"
                             yield "data: [DONE]\n\n"
                             success = True
+                            _full = "".join(adapter.text_buf)
+                            _think = "".join(adapter.thinking_buf) if emit_think else ""
+                            record_usage(
+                                model,
+                                prompt_tokens=estimate_prompt_tokens(message),
+                                completion_tokens=estimate_tokens(_full)
+                                + (estimate_tokens(_think) if _think else 0),
+                                ok=True,
+                            )
                             logger.info(
                                 "chat stream completed: attempt={}/{} model={} image_count={}",
                                 attempt + 1,
@@ -874,12 +896,15 @@ async def completions(
                 len(parse_result.calls),
             )
             pt = estimate_prompt_tokens(message)
+            ct = estimate_tool_call_tokens(parse_result.calls)
+            usage = build_usage(pt, ct)
+            record_usage(model, usage, ok=True)
             resp = make_tool_call_response(
                 model,
                 parse_result.calls,
                 prompt_content=message,
                 response_id=response_id,
-                usage=build_usage(pt, estimate_tool_call_tokens(parse_result.calls)),
+                usage=usage,
             )
             # 注入结构化搜索信源（tool_calls 场景）
             sources = adapter.search_sources_list()
@@ -900,6 +925,8 @@ async def completions(
     pt = estimate_prompt_tokens(message)
     ct = estimate_tokens(full_text)
     rt = estimate_tokens(thinking_text) if thinking_text else 0
+    usage = build_usage(pt, ct + rt, reasoning_tokens=rt)
+    record_usage(model, usage, ok=True)
     chat_anns = _to_chat_annotations(adapter.annotations_list())
     return make_chat_response(
         model,
@@ -909,7 +936,7 @@ async def completions(
         reasoning_content=thinking_text,
         search_sources=adapter.search_sources_list(),
         annotations=chat_anns or None,
-        usage=build_usage(pt, ct + rt, reasoning_tokens=rt),
+        usage=usage,
     )
 
 

@@ -448,6 +448,9 @@ const SCHEMA_DEF = [
           { key: 'dynamic_statsig', label: '动态 Statsig', labelKey: 'config.schema.fields.dynamicStatsig.label', type: 'bool', desc: '为每次请求动态生成 Statsig 设备指纹，以降低风控拦截概率。', descKey: 'config.schema.fields.dynamicStatsig.desc' },
           { key: 'enable_nsfw', label: '允许 NSFW 生成', labelKey: 'config.schema.fields.enableNsfw.label', type: 'bool', desc: '允许图像生成接口绕过 NSFW 内容过滤。', descKey: 'config.schema.fields.enableNsfw.desc' },
           { key: 'show_search_sources', label: '正文追加信源', labelKey: 'config.schema.fields.showSearchSources.label', type: 'bool', desc: '搜索信源始终以 search_sources 字段输出。此选项控制是否同时在正文末尾追加 ## Sources 段落（兼容文本解析客户端）。', descKey: 'config.schema.fields.showSearchSources.desc' },
+          { key: 'usage_stats_enabled', label: '启用用量统计', labelKey: 'config.schema.fields.usageStatsEnabled.label', type: 'bool', desc: '按小时 × 模型 × API Key 聚合 token 用量；关闭后热路径完全跳过统计。', descKey: 'config.schema.fields.usageStatsEnabled.desc' },
+          { key: 'usage_stats_flush_sec', label: '统计落盘间隔(秒)', labelKey: 'config.schema.fields.usageStatsFlushSec.label', type: 'number', desc: '内存聚合写入磁盘的间隔，建议 30 或 60。', descKey: 'config.schema.fields.usageStatsFlushSec.desc', showIf: 'features.usage_stats_enabled' },
+          { key: 'usage_stats_retention_days', label: '统计保留天数', labelKey: 'config.schema.fields.usageStatsRetentionDays.label', type: 'number', desc: '小时粒度数据的最长保留天数，过期自动清理。', descKey: 'config.schema.fields.usageStatsRetentionDays.desc', showIf: 'features.usage_stats_enabled' },
           { key: 'custom_instruction', label: '全局附加指令', labelKey: 'config.schema.fields.customInstruction.label', type: 'textarea', desc: '为每次请求注入统一的 system 消息，用于约束模型行为或固定角色设定。', descKey: 'config.schema.fields.customInstruction.desc' },
         ]
       },

@@ -14,6 +14,7 @@ from app.platform.config.snapshot import get_config
 from app.platform.errors import RateLimitError, UpstreamError
 from app.platform.runtime.clock import now_s
 from app.platform.tokens import estimate_prompt_tokens, estimate_tokens, estimate_tool_call_tokens
+from app.platform.usage_stats import record_usage
 from app.control.model.enums import ModeId
 from app.control.model.registry import resolve as resolve_model
 from app.control.account.enums import FeedbackKind
@@ -477,6 +478,7 @@ async def create(
                         pt = estimate_prompt_tokens(message)
                         ct = estimate_tool_call_tokens(detected_fc_items)
                         rt = estimate_tokens(full_think) if full_think else 0
+                        record_usage(model, prompt_tokens=pt, completion_tokens=ct + rt, ok=True)
                         yield format_sse("response.completed", {
                             "type":     "response.completed",
                             "response": make_resp_object(
@@ -575,6 +577,7 @@ async def create(
                         pt  = estimate_prompt_tokens(message)
                         ct  = estimate_tokens(full_text)
                         rt  = estimate_tokens(full_think) if full_think else 0
+                        record_usage(model, prompt_tokens=pt, completion_tokens=ct + rt, ok=True)
                         yield format_sse("response.completed", {
                             "type":     "response.completed",
                             "response": make_resp_object(
@@ -731,6 +734,7 @@ async def create(
             pt = estimate_prompt_tokens(message)
             ct = estimate_tool_call_tokens(tc_result.calls)
             rt = estimate_tokens(full_think) if full_think else 0
+            record_usage(model, prompt_tokens=pt, completion_tokens=ct + rt, ok=True)
             logger.info("responses tool_calls: model={} calls={}", model, len(tc_result.calls))
             return make_resp_object(
                 response_id, model, "completed", output,
@@ -763,6 +767,7 @@ async def create(
     pt = estimate_prompt_tokens(message)
     ct = estimate_tokens(full_text)
     rt = estimate_tokens(full_think) if full_think else 0
+    record_usage(model, prompt_tokens=pt, completion_tokens=ct + rt, ok=True)
     return make_resp_object(
         response_id, model, "completed", output,
         build_resp_usage(pt, ct + rt, rt),

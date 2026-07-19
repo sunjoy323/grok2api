@@ -537,12 +537,22 @@ window.renderAdminHeader = async function renderAdminHeader() {
 
   await loadVersion();
 
+  // Discard stale sessionStorage headers from older builds (version alone may not change).
+  const isHeaderComplete = (html) =>
+    typeof html === 'string' && html.includes('data-nav="/admin/stats"');
+
   try {
     const cachedHtml = window.__grok2apiAdminHeaderHtml || readSessionCache(HEADER_HTML_CACHE_KEY);
-    if (cachedHtml) {
+    if (cachedHtml && isHeaderComplete(cachedHtml)) {
       mount.innerHTML = cachedHtml;
     } else {
-      const res = await fetch('/static/admin/header.html');
+      if (cachedHtml) {
+        try { sessionStorage.removeItem(HEADER_HTML_CACHE_KEY); } catch {}
+        window.__grok2apiAdminHeaderHtml = '';
+      }
+      const res = await fetch(`/static/admin/header.html?v=${encodeURIComponent(scriptVersion)}`, {
+        cache: 'no-store',
+      });
       if (!res.ok) throw new Error('header unavailable');
       const html = await res.text();
       mount.innerHTML = html;
@@ -561,6 +571,7 @@ window.renderAdminHeader = async function renderAdminHeader() {
           </div>
           <nav class="admin-nav">
             <a href="/admin/account" class="admin-nav-link" data-nav="/admin/account" data-i18n="header.account">账户管理</a>
+            <a href="/admin/stats" class="admin-nav-link" data-nav="/admin/stats" data-i18n="header.stats">用量统计</a>
             <a href="/admin/config" class="admin-nav-link" data-nav="/admin/config" data-i18n="header.config">配置管理</a>
             <a href="/admin/cache" class="admin-nav-link" data-nav="/admin/cache" data-i18n="header.cache">缓存管理</a>
           </nav>

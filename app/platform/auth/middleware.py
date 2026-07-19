@@ -59,16 +59,22 @@ def _extract_bearer(authorization: str | None) -> str | None:
 async def verify_api_key(
     authorization: str | None = Header(default=None),
     x_api_key: str | None = Header(default=None, alias="x-api-key"),
-) -> None:
+) -> str:
     """Validate Bearer token against configured ``api_key``.
 
     Accepts either ``Authorization: Bearer <key>`` (OpenAI / grok2api style)
     or ``X-API-Key: <key>`` (official Anthropic SDK style) so that agents
     targeting the Anthropic-compatible endpoint work without reconfiguration.
+
+    Returns the accepted key string (empty when auth is disabled) and stores
+    it in a contextvar for usage stats.
     """
+    from app.platform.usage_stats import set_request_api_key
+
     allowed_keys = _get_keys()
     if not allowed_keys:
-        return
+        set_request_api_key("")
+        return ""
 
     token = _extract_bearer(authorization) or x_api_key or None
     if token is None:
@@ -76,6 +82,9 @@ async def verify_api_key(
 
     if not any(hmac.compare_digest(token, k) for k in allowed_keys):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Invalid API key.")
+
+    set_request_api_key(token)
+    return token
 
 
 async def verify_admin_key(
