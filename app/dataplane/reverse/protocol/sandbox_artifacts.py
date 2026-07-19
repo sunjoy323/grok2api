@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
-import html
 import re
 from typing import Any
 
@@ -265,9 +264,13 @@ def _file_id_for(path: str, raw: bytes) -> str:
 
 
 def _render_video_embed(url: str) -> str:
-    """Always return a playable HTML video tag for chat display stability."""
-    safe = html.escape(url, quote=True)
-    return f'<video controls preload="metadata" src="{safe}"></video>'
+    """Return markdown-style video link.
+
+    Do **not** emit raw ``<video>`` HTML here: chat UIs escape HTML before
+    rendering markdown, which would turn tags into unplayable plain text.
+    Clients convert ``[video](url)`` into a real ``<video>`` element.
+    """
+    return f"[video]({url})"
 
 
 def _render_image_embed(url: str) -> str:

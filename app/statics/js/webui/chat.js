@@ -144,6 +144,12 @@
       const safeAlt = escapeHtml(String(alt || 'image'));
       return `<img src="${escapeHtml(safeHref)}" alt="${safeAlt}" loading="lazy">`;
     });
+    // Explicit video markdown: [video](url) → <video>
+    html = html.replace(/\[video\]\(([^)]+)\)/gi, (_, href) => {
+      const safeHref = sanitizeUrl(String(href || '').trim());
+      if (!safeHref) return '';
+      return `<video controls preload="metadata" src="${escapeHtml(safeHref)}"></video>`;
+    });
     html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, href) => {
       const rawHref = String(href || '').trim();
       const safeHref = sanitizeUrl(rawHref);
@@ -274,6 +280,18 @@
     return { out, placeholders };
   }
 
+  function postProcessVideoMarkdown(html) {
+    // marked may leave [video](url) as a normal link; upgrade to <video>
+    return String(html || '').replace(
+      /<a\s+[^>]*href=["']([^"']+)["'][^>]*>\s*video\s*<\/a>/gi,
+      (_, href) => {
+        const safeHref = sanitizeUrl(href);
+        if (!safeHref || !isVideoUrl(safeHref)) return _;
+        return `<video controls preload="metadata" src="${escapeHtml(safeHref)}"></video>`;
+      }
+    );
+  }
+
   function renderRichMarkdown(source) {
     if (window.marked && typeof window.marked.parse === 'function') {
       let toRender = normalizeMediaContent(source);
@@ -285,11 +303,28 @@
         placeholders = extracted.placeholders;
       }
 
+      // Protect [video](url) from marked turning it into a text link
+      const videoPlaceholders = [];
+      toRender = toRender.replace(/\[video\]\(([^)]+)\)/gi, (_, href) => {
+        const i = videoPlaceholders.length;
+        videoPlaceholders.push(String(href || '').trim());
+        return `\x02VIDEO${i}\x03`;
+      });
+
       let rendered = window.marked.parse(toRender, {
         async: false,
         breaks: true,
         gfm: true,
       });
+
+      if (videoPlaceholders.length) {
+        rendered = rendered.replace(/\x02VIDEO(\d+)\x03/g, (_, idx) => {
+          const href = videoPlaceholders[parseInt(idx, 10)] || '';
+          const safeHref = sanitizeUrl(href);
+          if (!safeHref) return '';
+          return `<video controls preload="metadata" src="${escapeHtml(safeHref)}"></video>`;
+        });
+      }
 
       if (window.katex && placeholders.length) {
         rendered = rendered.replace(/\x02MATH(\d+)\x03/g, (_, idx) => {
@@ -302,9 +337,9 @@
         });
       }
 
-      return sanitizeRenderedHtml(rendered);
+      return sanitizeRenderedHtml(postProcessVideoMarkdown(rendered));
     }
-    return renderMarkdown(source);
+    return postProcessVideoMarkdown(renderMarkdown(source));
   }
 
   function isImageUrl(value) {
@@ -337,12 +372,24 @@
 
   function normalizeMediaContent(source) {
     let input = stripRawBase64Dumps(source);
-    input = input.replace(/\[video\]\(([^)]+)\)/gi, '$1');
-    // Convert [label](media-url) → image/video markdown before generic link render
+    // Already-escaped video tags from older responses → [video](url)
+    input = input.replace(
+      /&lt;video\b[^&]*src=["']([^"']+)["'][^&]*&gt;(?:&lt;\/video&gt;)?/gi,
+      (_, src) => `\n\n[video](${src})\n\n`
+    );
+    // Raw HTML video tags (if any) → [video](url) so later escape+render is safe
+    input = input.replace(
+      /<video\b[^>]*\bsrc=["']([^"']+)["'][^>]*>\s*<\/video>/gi,
+      (_, src) => `\n\n[video](${src})\n\n`
+    );
+    // Convert [label](media-url) → image/video markdown (keep [video](url) as-is)
     input = input.replace(/\[([^\]]*)\]\(([^)]+)\)/g, (full, label, href) => {
       const url = String(href || '').trim();
+      if (String(label || '').toLowerCase() === 'video' && isVideoUrl(url)) {
+        return `[video](${url})`;
+      }
       if (isImageUrl(url)) return `![${label || 'image'}](${url})`;
-      if (isVideoUrl(url)) return `<video controls preload="metadata" src="${url}"></video>`;
+      if (isVideoUrl(url)) return `[video](${url})`;
       return full;
     });
     // Bare media URLs on their own line (or mid-paragraph after whitespace)
@@ -352,9 +399,7 @@
         const cleaned = url.replace(/[.,;:!?)]+$/, '');
         const trailing = url.slice(cleaned.length);
         if (isImageUrl(cleaned)) return `${prefix}![image](${cleaned})${trailing}`;
-        if (isVideoUrl(cleaned)) {
-          return `${prefix}<video controls preload="metadata" src="${cleaned}"></video>${trailing}`;
-        }
+        if (isVideoUrl(cleaned)) return `${prefix}[video](${cleaned})${trailing}`;
         return full;
       }
     );
@@ -624,8 +669,10 @@
     }
 
     if (role === 'assistant') {
-      // Ensure image markdown is on its own line for robust parsing
-      const normalized = String(content || '').replace(/([^\n])(!\[[^\]]*\]\([^)]+\))/g, '$1\n\n$2');
+      // Ensure image/video markdown is on its own line for robust parsing
+      let normalized = String(content || '');
+      normalized = normalized.replace(/([^\n])(!\[[^\]]*\]\([^)]+\))/g, '$1\n\n$2');
+      normalized = normalized.replace(/([^\n])(\[video\]\([^)]+\))/gi, '$1\n\n$2');
       card.innerHTML = renderRichMarkdown(normalized);
       enhanceMediaElements(card);
       return;

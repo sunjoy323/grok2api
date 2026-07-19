@@ -93,12 +93,13 @@ class MaterializeTests(unittest.IsolatedAsyncioTestCase):
 
         save.assert_called_once()
         self.assertIn("/v1/files/video?", rewritten)
-        self.assertIn("<video", rewritten)
+        self.assertIn("[video](", rewritten)
+        self.assertNotIn("<video", rewritten)  # raw HTML would be escaped by chat UI
         self.assertNotIn(path, rewritten)
         self.assertNotIn("B64:", rewritten)
         self.assertTrue(embeds)
         self.assertIn("/v1/files/video?", embeds[0])
-        self.assertIn("<video", embeds[0])
+        self.assertIn("[video](", embeds[0])
 
     async def test_strips_fenced_and_line_base64(self) -> None:
         b64 = base64.b64encode(_MINI_MP4).decode()
@@ -129,7 +130,7 @@ class MaterializeTests(unittest.IsolatedAsyncioTestCase):
             rewritten, embeds = await materialize_sandbox_media(text)
 
         self.assertNotIn(b64[:40], rewritten)
-        self.assertIn("<video", rewritten)
+        self.assertIn("[video](", rewritten)
         self.assertTrue(embeds)
 
     def test_personality_hint_merged(self) -> None:
