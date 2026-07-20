@@ -630,14 +630,29 @@ async def materialize_sandbox_media(
     return rewritten, embeds
 
 
+# Absolute host URL as one unit, or root-relative /v1/files/... (not mid-host).
 _LOCAL_VIDEO_URL_RE = re.compile(
-    r"(?<!\()((?:https?://[^\s)\]>\"']+)?/v1/files/video\?[^\s)\]>\"']+)",
+    r"(?:https?://[^\s)\]>\"']+?/v1/files/video\?[^\s)\]>\"']+"
+    r"|(?<![\w./-])/v1/files/video\?[^\s)\]>\"']+)",
     re.IGNORECASE,
 )
 _LOCAL_IMAGE_URL_RE = re.compile(
-    r"(?<!\()((?:https?://[^\s)\]>\"']+)?/v1/files/image\?[^\s)\]>\"']+)",
+    r"(?:https?://[^\s)\]>\"']+?/v1/files/image\?[^\s)\]>\"']+"
+    r"|(?<![\w./-])/v1/files/image\?[^\s)\]>\"']+)",
     re.IGNORECASE,
 )
+# Protect image/video markdown and any generic link whose href is already a
+# local media URL (prevents nesting: [download](![image](...))).
+_EXISTING_MEDIA_MD_RE = re.compile(
+    r"(?:"
+    r"!\[[^\]]*\]\([^)]+\)"
+    r"|\[video\]\([^)]+\)"
+    r"|\[[^\]]*\]\((?:https?://[^)\s]*?/v1/files/(?:image|video)\?[^)]*"
+    r"|/v1/files/(?:image|video)\?[^)]*)\)"
+    r")",
+    re.IGNORECASE,
+)
+_TRAILING_URL_PUNCT = ".,;:。，；："
 
 
 def _upgrade_bare_media_urls(text: str) -> str:
@@ -645,26 +660,40 @@ def _upgrade_bare_media_urls(text: str) -> str:
     if not text:
         return text
 
+    protected: list[str] = []
+
+    def _stash(m: re.Match[str]) -> str:
+        protected.append(m.group(0))
+        return f"\x02MEDIA{len(protected) - 1}\x03"
+
+    # Protect existing media markdown so absolute local URLs inside
+    # ![image](https://host/v1/files/...) are not rewritten again.
+    rewritten = _EXISTING_MEDIA_MD_RE.sub(_stash, text)
+
     def _vid(m: re.Match[str]) -> str:
-        url = m.group(1).rstrip(".,;:。，；：")
-        # already inside markdown? (lookbehind only checks '(')
-        return f"[video]({url})"
+        raw = m.group(0)
+        url = raw.rstrip(_TRAILING_URL_PUNCT)
+        trailing = raw[len(url) :]
+        return f"[video]({url}){trailing}"
 
     def _img(m: re.Match[str]) -> str:
-        url = m.group(1).rstrip(".,;:。，；：")
-        return f"![image]({url})"
+        raw = m.group(0)
+        url = raw.rstrip(_TRAILING_URL_PUNCT)
+        trailing = raw[len(url) :]
+        return f"![image]({url}){trailing}"
 
-    # Skip URLs already wrapped as [video](...) or ![image](...)
-    # Process line by line to avoid double-wrapping
-    lines: list[str] = []
-    for line in text.split("\n"):
-        if "[video](" in line or "![image](" in line:
-            lines.append(line)
-            continue
-        line = _LOCAL_VIDEO_URL_RE.sub(_vid, line)
-        line = _LOCAL_IMAGE_URL_RE.sub(_img, line)
-        lines.append(line)
-    return "\n".join(lines)
+    rewritten = _LOCAL_VIDEO_URL_RE.sub(_vid, rewritten)
+    rewritten = _LOCAL_IMAGE_URL_RE.sub(_img, rewritten)
+
+    def _restore(m: re.Match[str]) -> str:
+        idx = int(m.group(1))
+        if 0 <= idx < len(protected):
+            return protected[idx]
+        return ""  # forged / out-of-range token — drop, do not crash
+
+    # Always restore (also strips forged tokens when protected is empty).
+    rewritten = re.sub(r"\x02MEDIA(\d+)\x03", _restore, rewritten)
+    return rewritten
 
 
 def merge_personality_with_artifact_hint(custom: str) -> str:

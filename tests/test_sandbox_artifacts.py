@@ -281,6 +281,99 @@ class MaterializeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("B64PART", merged)
         self.assertIn("B64META", merged)
 
+    def test_upgrade_bare_media_urls_no_double_wrap(self) -> None:
+        from app.dataplane.reverse.protocol.sandbox_artifacts import (
+            _upgrade_bare_media_urls,
+        )
+
+        abs_img = (
+            "https://api.miaooo.cc/v1/files/image"
+            "?id=abc123def4567890&exp=1785125630&sig=e4d92deabc"
+        )
+        abs_vid = (
+            "https://api.miaooo.cc/v1/files/video"
+            "?id=abc123def4567890&exp=1785125630&sig=e4d92deabc"
+        )
+        already_img = f"![image]({abs_img})"
+        already_vid = f"[video]({abs_vid})"
+        bare_img = abs_img
+        bare_path = "/v1/files/image?id=abc123def4567890&exp=1&sig=2"
+        bare_vid_path = "/v1/files/video?id=abc123def4567890&exp=1&sig=2"
+        mixed = f"here {already_img}\nand bare {bare_path}"
+        generic_link = f"[download]({abs_img})"
+        generic_vid_link = f"[clip]({abs_vid})"
+
+        self.assertEqual(_upgrade_bare_media_urls(already_img), already_img)
+        self.assertEqual(_upgrade_bare_media_urls(already_vid), already_vid)
+        self.assertEqual(
+            _upgrade_bare_media_urls(bare_img), f"![image]({bare_img})"
+        )
+        self.assertEqual(
+            _upgrade_bare_media_urls(abs_vid), f"[video]({abs_vid})"
+        )
+        self.assertEqual(
+            _upgrade_bare_media_urls(bare_path), f"![image]({bare_path})"
+        )
+        self.assertEqual(
+            _upgrade_bare_media_urls(bare_vid_path), f"[video]({bare_vid_path})"
+        )
+        upgraded_mixed = _upgrade_bare_media_urls(mixed)
+        self.assertIn(already_img, upgraded_mixed)
+        self.assertIn(f"![image]({bare_path})", upgraded_mixed)
+        self.assertNotIn("!![image]", upgraded_mixed)
+        self.assertNotIn("https://api.miaooo.cc![image](", upgraded_mixed)
+
+        # Generic markdown links with media href must not nest-wrap
+        self.assertEqual(_upgrade_bare_media_urls(generic_link), generic_link)
+        self.assertEqual(
+            _upgrade_bare_media_urls(generic_vid_link), generic_vid_link
+        )
+        self.assertNotIn(
+            "[download](![image]",
+            _upgrade_bare_media_urls(generic_link),
+        )
+        self.assertNotIn(
+            "[clip]([video]",
+            _upgrade_bare_media_urls(generic_vid_link),
+        )
+
+        # Trailing sentence punctuation is preserved outside the markdown
+        self.assertEqual(
+            _upgrade_bare_media_urls(f"{abs_img}."),
+            f"![image]({abs_img}).",
+        )
+        self.assertEqual(
+            _upgrade_bare_media_urls(f"{abs_vid}。"),
+            f"[video]({abs_vid})。",
+        )
+
+        # Idempotent: second pass must be a no-op
+        samples = [
+            already_img,
+            already_vid,
+            bare_img,
+            abs_vid,
+            bare_path,
+            bare_vid_path,
+            mixed,
+            generic_link,
+            generic_vid_link,
+            f"{abs_img}.",
+        ]
+        for sample in samples:
+            once = _upgrade_bare_media_urls(sample)
+            self.assertEqual(
+                _upgrade_bare_media_urls(once),
+                once,
+                msg=f"not idempotent for: {sample!r}",
+            )
+
+        # Forged placeholder token must not raise IndexError
+        forged = f"\x02MEDIA99\x03 and {bare_path}"
+        forged_out = _upgrade_bare_media_urls(forged)
+        self.assertIn(f"![image]({bare_path})", forged_out)
+        self.assertNotIn("\x02MEDIA99\x03", forged_out)
+
 
 if __name__ == "__main__":
     unittest.main()
