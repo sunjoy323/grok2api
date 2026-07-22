@@ -161,6 +161,19 @@ def _prefer_warm_tokens() -> list[str] | None:
         return None
 
 
+def _cli_prefer_tokens(cfg) -> list[str] | None:
+    """CLI account preference list controlled by chat.cli_account_selection.
+
+    * warm_prefer (default): restrict to OIDC-warm tokens when any exist.
+    * rotate: no preference — full-pool scoring (recent-use penalty spreads load).
+    """
+    mode = (cfg.get_str("chat.cli_account_selection", "warm_prefer") or "warm_prefer")
+    mode = str(mode).strip().lower().replace("-", "_")
+    if mode in ("rotate", "round_robin", "poll", "uniform", "spread"):
+        return None
+    return _prefer_warm_tokens()
+
+
 def _should_hot_convert(
     *,
     last_resort: bool,
@@ -275,7 +288,7 @@ async def completions(
           - str chunks for stream
           - dict for non-stream result
         """
-        prefer = _prefer_warm_tokens()
+        prefer = _cli_prefer_tokens(cfg)
         acct, selected_mode_id = await reserve_account(
             directory,
             spec,

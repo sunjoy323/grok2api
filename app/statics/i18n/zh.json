@@ -375,7 +375,8 @@
         "timeouts": "请求超时设置",
         "imageProtocol": "NSFW 与图像协议",
         "logging": "日志配置",
-        "localMediaCache": "本地媒体缓存"
+        "localMediaCache": "本地媒体缓存",
+        "cliSelection": "Grok 4.5 / CLI 选号"
       },
       "options": {
         "imageFormat": {
@@ -400,6 +401,10 @@
           "none": "关闭",
           "manual": "手动",
           "flaresolverr": "FlareSolverr"
+        },
+        "cliAccountSelection": {
+          "warmPrefer": "Warm 优先（默认）",
+          "rotate": "轮询优先（更均匀）"
         }
       },
       "fields": {
@@ -667,6 +672,23 @@
         "usageStatsRetentionDays": {
           "label": "统计保留天数",
           "desc": "小时粒度数据的最长保留天数，过期自动清理。"
+        },
+        "cliAccountSelection": {
+          "label": "CLI 选号策略",
+          "desc": "仅影响 grok-4.5 / CLI。Warm 优先：优先已有 OIDC 的号；轮询优先：整池分散，更均匀。",
+          "help": "warm_prefer 适合冷热混杂；rotate 适合大号池、希望压低单号 429。"
+        },
+        "cliAccountRetries": {
+          "label": "CLI 换号次数下限",
+          "desc": "CLI 失败或 OIDC 未就绪时的换号次数下限。"
+        },
+        "cliReasoningEffort": {
+          "label": "CLI 默认思考强度",
+          "desc": "客户端未指定时 CLI 默认 reasoning_effort。"
+        },
+        "cliOidcHotConvertLastResort": {
+          "label": "无 Warm 时允许热路径 Convert",
+          "desc": "仅在完全没有 warm OIDC 且最后一次换号时阻塞 convert。"
         }
       }
     }

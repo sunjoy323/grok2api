@@ -372,7 +372,8 @@
         "timeouts": "Tiempos de espera",
         "imageProtocol": "NSFW y transmisión de imágenes",
         "logging": "Registro",
-        "localMediaCache": "Caché multimedia local"
+        "localMediaCache": "Caché multimedia local",
+        "cliSelection": "Grok 4.5 / CLI Selection"
       },
       "options": {
         "imageFormat": {
@@ -397,6 +398,10 @@
           "none": "Desactivado",
           "manual": "Manual",
           "flaresolverr": "FlareSolverr"
+        },
+        "cliAccountSelection": {
+          "warmPrefer": "Warm prefer (default)",
+          "rotate": "Rotate (spread)"
         }
       },
       "fields": {
@@ -602,6 +607,23 @@
         "logMaxFiles": {
           "label": "Retención de registros (días)",
           "desc": "Número máximo de archivos de registro diarios a conservar durante la rotación. Por defecto: 7."
+        },
+        "cliAccountSelection": {
+          "label": "CLI account selection",
+          "desc": "CLI/grok-4.5 only. Warm prefer: prefer OIDC-ready accounts. Rotate: full-pool spread.",
+          "help": "warm_prefer for mixed OIDC; rotate for large pools and fewer sticky 429s."
+        },
+        "cliAccountRetries": {
+          "label": "CLI min account swaps",
+          "desc": "Minimum swaps on CLI failure / missing OIDC."
+        },
+        "cliReasoningEffort": {
+          "label": "CLI default reasoning effort",
+          "desc": "Default reasoning_effort when the client omits it."
+        },
+        "cliOidcHotConvertLastResort": {
+          "label": "Allow hot-path convert when no warm OIDC",
+          "desc": "Block on SSO→OIDC only as last resort when process has no warm credentials."
         }
       }
     }

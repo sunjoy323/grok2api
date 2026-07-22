@@ -708,6 +708,57 @@ const SCHEMA_DEF = [
         ]
       },
       {
+        title: 'Grok 4.5 / CLI 选号', titleKey: 'config.schema.groups.cliSelection',
+        section: 'chat',
+        fields: [
+          {
+            key: 'cli_account_selection',
+            label: 'CLI 选号策略',
+            labelKey: 'config.schema.fields.cliAccountSelection.label',
+            type: 'select',
+            options: [
+              { value: 'warm_prefer', label: 'Warm 优先（默认）', labelKey: 'config.schema.options.cliAccountSelection.warmPrefer' },
+              { value: 'rotate', label: '轮询优先（更均匀）', labelKey: 'config.schema.options.cliAccountSelection.rotate' },
+            ],
+            desc: '仅影响 grok-4.5 / CLI 路径。Warm 优先：优先已有可用 OIDC 的号（更粘号、冷号难轮到）。轮询优先：不限制 warm 子集，整池按健康/配额/最近使用评分分散，更接近均匀轮转，OIDC 未就绪时会多换号。',
+            descKey: 'config.schema.fields.cliAccountSelection.desc',
+            help: 'warm_prefer：适合 OIDC 冷热混杂、想减少 device flow。\nrotate：适合号很多且希望分散请求、降低单号 429；依赖磁盘/后台 refresh 或换号补 OIDC。',
+            helpKey: 'config.schema.fields.cliAccountSelection.help',
+          },
+          {
+            key: 'cli_account_retries',
+            label: 'CLI 换号次数下限',
+            labelKey: 'config.schema.fields.cliAccountRetries.label',
+            type: 'number',
+            min: 0,
+            max: 32,
+            desc: 'CLI 请求失败/OIDC 未就绪时的换号次数下限（与 retry.max_retries 取较大值）。',
+            descKey: 'config.schema.fields.cliAccountRetries.desc',
+          },
+          {
+            key: 'cli_reasoning_effort',
+            label: 'CLI 默认思考强度',
+            labelKey: 'config.schema.fields.cliReasoningEffort.label',
+            type: 'select',
+            options: [
+              { value: 'low', label: 'low' },
+              { value: 'medium', label: 'medium' },
+              { value: 'high', label: 'high' },
+            ],
+            desc: '客户端未指定 reasoning_effort 时，CLI 上游使用的默认强度。',
+            descKey: 'config.schema.fields.cliReasoningEffort.desc',
+          },
+          {
+            key: 'cli_oidc_hot_convert_last_resort',
+            label: '无 Warm 时允许热路径 Convert',
+            labelKey: 'config.schema.fields.cliOidcHotConvertLastResort.label',
+            type: 'bool',
+            desc: '开启后：仅当进程内没有任何 warm OIDC 且已是最后一次换号时，才在请求热路径阻塞做 SSO→OIDC。关闭则始终后台补转、热路径不 convert。',
+            descKey: 'config.schema.fields.cliOidcHotConvertLastResort.desc',
+          },
+        ]
+      },
+      {
         title: '请求超时设置', titleKey: 'config.schema.groups.timeouts',
         section: 'chat',
         fields: [

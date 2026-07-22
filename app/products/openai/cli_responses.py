@@ -28,7 +28,7 @@ from app.products._account_selection import reserve_account
 from app.products.openai.chat import _configured_retry_codes, _should_retry_upstream
 from app.products.openai.cli_chat import (
     _cli_max_retries,
-    _prefer_warm_tokens,
+    _cli_prefer_tokens,
     _reasoning_effort,
     _release_and_feedback,
     _resolve_access_token,
@@ -184,7 +184,7 @@ async def create(
         *,
         stream_out: bool,
     ) -> AsyncGenerator[Any, None]:
-        prefer = _prefer_warm_tokens()
+        prefer = _cli_prefer_tokens(cfg)
         acct, selected_mode_id = await reserve_account(
             directory,
             spec,
