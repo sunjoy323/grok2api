@@ -191,7 +191,7 @@ def test_poll_token_does_not_sleep_before_first_success() -> None:
         return _Resp()
 
     with patch.object(oidc.time, "sleep", side_effect=lambda s: sleeps.append(s)), patch.object(
-        oidc.urllib.request, "urlopen", side_effect=fake_urlopen
+        oidc, "_urlopen", side_effect=fake_urlopen
     ):
         data = oidc._poll_token("device", interval=5, expires_in=1800)
         assert data["access_token"] == "t"
