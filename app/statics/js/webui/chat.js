@@ -137,12 +137,32 @@
   function renderInlineMarkdown(source) {
     let html = escapeHtml(source);
     html = html.replace(/`([^`]+)`/g, (_, code) => `<code>${code}</code>`);
+    // Images first: ![alt](url) → <img>  (must run before generic [label](url) → <a>)
+    html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, href) => {
+      const safeHref = sanitizeUrl(String(href || '').trim());
+      if (!safeHref) return escapeHtml(alt || '');
+      const safeAlt = escapeHtml(String(alt || 'image'));
+      return `<img src="${escapeHtml(safeHref)}" alt="${safeAlt}" loading="lazy">`;
+    });
+    // Explicit video markdown: [video](url) → <video>
+    html = html.replace(/\[video\]\(([^)]+)\)/gi, (_, href) => {
+      const safeHref = sanitizeUrl(String(href || '').trim());
+      if (!safeHref) return '';
+      return `<video controls preload="metadata" src="${escapeHtml(safeHref)}"></video>`;
+    });
     html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, href) => {
-      const safeHref = sanitizeUrl(href.trim());
-      const safeLabel = label.trim() || href.trim();
-      return safeHref
-        ? `<a href="${escapeHtml(safeHref)}" target="_blank" rel="noreferrer">${safeLabel}</a>`
-        : safeLabel;
+      const rawHref = String(href || '').trim();
+      const safeHref = sanitizeUrl(rawHref);
+      const safeLabel = label.trim() || rawHref;
+      if (!safeHref) return safeLabel;
+      // Media URLs linked as [text](url) still render as media, not plain anchors
+      if (isImageUrl(safeHref)) {
+        return `<img src="${escapeHtml(safeHref)}" alt="${escapeHtml(safeLabel)}" loading="lazy">`;
+      }
+      if (isVideoUrl(safeHref)) {
+        return `<video controls preload="metadata" src="${escapeHtml(safeHref)}"></video>`;
+      }
+      return `<a href="${escapeHtml(safeHref)}" target="_blank" rel="noreferrer">${safeLabel}</a>`;
     });
     html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     html = html.replace(/(^|[^\*])\*([^*]+)\*/g, '$1<em>$2</em>');
@@ -260,9 +280,24 @@
     return { out, placeholders };
   }
 
+  function postProcessVideoMarkdown(html) {
+    // marked may leave [video](url) as a normal link; upgrade to <video>
+    return String(html || '').replace(
+      /<a\s+[^>]*href=["']([^"']+)["'][^>]*>\s*video\s*<\/a>/gi,
+      (_, href) => {
+        const safeHref = sanitizeUrl(href);
+        if (!safeHref || !isVideoUrl(safeHref)) return _;
+        return `<video controls preload="metadata" src="${escapeHtml(safeHref)}"></video>`;
+      }
+    );
+  }
+
   function renderRichMarkdown(source) {
+    // Always normalize first so mid-host / double-bang fixes apply on both
+    // the marked path and the plain-markdown fallback.
+    const normalized = normalizeMediaContent(source);
     if (window.marked && typeof window.marked.parse === 'function') {
-      let toRender = normalizeMediaContent(source);
+      let toRender = normalized;
       let placeholders = [];
 
       if (window.katex) {
@@ -271,11 +306,28 @@
         placeholders = extracted.placeholders;
       }
 
+      // Protect [video](url) from marked turning it into a text link
+      const videoPlaceholders = [];
+      toRender = toRender.replace(/\[video\]\(([^)]+)\)/gi, (_, href) => {
+        const i = videoPlaceholders.length;
+        videoPlaceholders.push(String(href || '').trim());
+        return `\x02VIDEO${i}\x03`;
+      });
+
       let rendered = window.marked.parse(toRender, {
         async: false,
         breaks: true,
         gfm: true,
       });
+
+      if (videoPlaceholders.length) {
+        rendered = rendered.replace(/\x02VIDEO(\d+)\x03/g, (_, idx) => {
+          const href = videoPlaceholders[parseInt(idx, 10)] || '';
+          const safeHref = sanitizeUrl(href);
+          if (!safeHref) return '';
+          return `<video controls preload="metadata" src="${escapeHtml(safeHref)}"></video>`;
+        });
+      }
 
       if (window.katex && placeholders.length) {
         rendered = rendered.replace(/\x02MATH(\d+)\x03/g, (_, idx) => {
@@ -288,14 +340,16 @@
         });
       }
 
-      return sanitizeRenderedHtml(rendered);
+      return sanitizeRenderedHtml(postProcessVideoMarkdown(rendered));
     }
-    return renderMarkdown(source);
+    return postProcessVideoMarkdown(renderMarkdown(normalized));
   }
 
   function isImageUrl(value) {
     const normalized = String(value || '').trim().toLowerCase();
     return normalized.includes('/v1/files/image')
+      || /assets\.grok\.com\//i.test(normalized)
+      || /imagine-public/i.test(normalized)
       || /\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/.test(normalized)
       || normalized.startsWith('data:image/');
   }
@@ -303,17 +357,110 @@
   function isVideoUrl(value) {
     const normalized = String(value || '').trim().toLowerCase();
     return normalized.includes('/v1/files/video')
-      || /\.(mp4|webm|mov|m4v|ogg)(\?|#|$)/.test(normalized);
+      || /\.(mp4|webm|mov|m4v|ogg)(\?|#|$)/.test(normalized)
+      || normalized.startsWith('data:video/');
+  }
+
+  function stripRawBase64Dumps(source) {
+    // Safety net: hide accidental base64 dumps that slipped past the server.
+    let text = String(source || '');
+    text = text.replace(/B64_FILE:[^\s:]+:[A-Za-z0-9+/=\s]{32,}/gi, '');
+    text = text.replace(/B64:[A-Za-z0-9+/=\s]{64,}/gi, '');
+    text = text.replace(/```(?:base64|text|plain|bin|mp4|data)?\s*\n[A-Za-z0-9+/=\s]{64,}\n```/gi, '');
+    text = text.replace(/^[A-Za-z0-9+/]{80,}={0,2}\s*$/gm, '');
+    text = text.replace(/data:video\/[\w.+-]+;base64,[A-Za-z0-9+/=]+/gi, '');
+    text = text.replace(/\n{3,}/g, '\n\n');
+    return text.trim();
   }
 
   function normalizeMediaContent(source) {
-    const input = String(source || '').replace(/\[video\]\(([^)]+)\)/gi, '$1');
-    return input.replace(/^(https?:\/\/\S+|\/v1\/files\/(?:image|video)\?id=\S+|data:image\/[^\s]+)$/gm, (match) => {
-      const url = match.trim();
-      if (isImageUrl(url)) return `![image](${url})`;
-      if (isVideoUrl(url)) return `<video controls preload="metadata" src="${escapeHtml(url)}"></video>`;
-      return match;
+    let input = stripRawBase64Dumps(source);
+    // Already-escaped video tags from older responses → [video](url)
+    input = input.replace(
+      /&lt;video\b[^&]*src=["']([^"']+)["'][^&]*&gt;(?:&lt;\/video&gt;)?/gi,
+      (_, src) => `\n\n[video](${src})\n\n`
+    );
+    // Raw HTML video tags (if any) → [video](url) so later escape+render is safe
+    input = input.replace(
+      /<video\b[^>]*\bsrc=["']([^"']+)["'][^>]*>\s*<\/video>/gi,
+      (_, src) => `\n\n[video](${src})\n\n`
+    );
+
+    // Protect existing markdown links so later bare-URL rewrites cannot
+    // double-wrap absolute local proxy URLs inside ![image](https://host/v1/...).
+    // Also normalize [image](url) → ![image](url) without turning ![image] into !![image].
+    const protectedMedia = [];
+    input = input.replace(/!?\[([^\]]*)\]\(([^)]+)\)/g, (full, label, href) => {
+      const url = String(href || '').trim();
+      const rawLabel = String(label || '');
+      const lowerLabel = rawLabel.toLowerCase();
+      const isBang = full.startsWith('!');
+      let normalized = null;
+
+      if (lowerLabel === 'video' && isVideoUrl(url)) {
+        normalized = `[video](${url})`;
+      } else if (isImageUrl(url)) {
+        // [image](url) / ![image](url) / [label](image-url) → image markdown
+        normalized = `![${rawLabel || 'image'}](${url})`;
+      } else if (isVideoUrl(url) && !isBang) {
+        normalized = `[video](${url})`;
+      } else {
+        return full;
+      }
+
+      const idx = protectedMedia.length;
+      protectedMedia.push(normalized);
+      return `\x02MEDIA${idx}\x03`;
     });
+
+    // Bare local media URLs only (absolute or root-relative).
+    // Match the full URL as one unit — never the `/v1/files/...` tail of an
+    // absolute host URL, which previously produced:
+    //   https://host![image](/v1/files/image?...)
+    // Existing markdown is already stashed above.
+    // Preserve trailing punctuation (sentence-final ".") like the CDN pass.
+    input = input.replace(
+      /https?:\/\/[^\s<>\[\]()'"]+?\/v1\/files\/(image|video)\?[^\s<>\[\]()'"]+/gi,
+      (url, kind) => {
+        const cleaned = url.replace(/[.,;:!?)。）」】]+$/u, '');
+        const trailing = url.slice(cleaned.length);
+        return (kind.toLowerCase() === 'video'
+          ? `[video](${cleaned})`
+          : `![image](${cleaned})`) + trailing;
+      }
+    );
+    // Root-relative /v1/files/... (not mid-host: lookbehind blocks word/dot)
+    input = input.replace(
+      /(?<![\w./-])\/v1\/files\/(image|video)\?[^\s<>\[\]()'"]+/gi,
+      (url, kind) => {
+        const cleaned = url.replace(/[.,;:!?)。）」】]+$/u, '');
+        const trailing = url.slice(cleaned.length);
+        return (kind.toLowerCase() === 'video'
+          ? `[video](${cleaned})`
+          : `![image](${cleaned})`) + trailing;
+      }
+    );
+    // Other bare image/video URLs (cdn / assets) after whitespace or CJK punct.
+    // Avoid ASCII ":" so "https://" is never split mid-scheme.
+    input = input.replace(
+      /(^|[\s（【「：、，,。；;！!？?])((?:https?:\/\/|\/)[^\s<>\[\]()'"]+)/g,
+      (full, prefix, url) => {
+        const cleaned = url.replace(/[.,;:!?)。）」】]+$/u, '');
+        const trailing = url.slice(cleaned.length);
+        // Skip already-wrapped local proxy URLs
+        if (/\/v1\/files\/(?:image|video)\?/i.test(cleaned)) return full;
+        if (isImageUrl(cleaned)) return `${prefix}![image](${cleaned})${trailing}`;
+        if (isVideoUrl(cleaned)) return `${prefix}[video](${cleaned})${trailing}`;
+        return full;
+      }
+    );
+
+    if (protectedMedia.length) {
+      input = input.replace(/\x02MEDIA(\d+)\x03/g, (_, idx) => (
+        protectedMedia[parseInt(idx, 10)] || ''
+      ));
+    }
+    return input;
   }
 
   function isNativeGrokMediaUrl(value) {
@@ -349,6 +496,72 @@
   }
 
   function enhanceMediaElements(card) {
+    // Upgrade residual media anchors to real media elements
+    card.querySelectorAll('a[href]').forEach((anchor) => {
+      const href = anchor.getAttribute('href') || '';
+      if (isImageUrl(href)) {
+        const img = document.createElement('img');
+        img.src = href;
+        img.alt = (anchor.textContent || 'image').trim() || 'image';
+        img.loading = 'lazy';
+        anchor.replaceWith(img);
+        return;
+      }
+      if (isVideoUrl(href)) {
+        const video = document.createElement('video');
+        video.controls = true;
+        video.preload = 'metadata';
+        video.src = href;
+        anchor.replaceWith(video);
+      }
+    });
+
+    // Text nodes that still contain bare /v1/files/{video,image} URLs → media tags.
+    // Absolute host URL is one atomic unit (first alt); root-relative is second.
+    // Never use optional-host `(?:https?://...)?/v1/files` — that mid-host-splits
+    // into `https://host` + `/v1/files/...`.
+    const bareLocalMediaRe =
+      /(https?:\/\/[^\s<>\[\]()'"]+?\/v1\/files\/(?:video|image)\?[^\s<>\[\]()'"]+|(?<![\w./-])\/v1\/files\/(?:video|image)\?[^\s<>\[\]()'"]+)/i;
+    const walker = document.createTreeWalker(card, NodeFilter.SHOW_TEXT);
+    const textNodes = [];
+    while (walker.nextNode()) textNodes.push(walker.currentNode);
+    textNodes.forEach((node) => {
+      const value = node.nodeValue || '';
+      if (!/\/v1\/files\/(?:video|image)\?/i.test(value)) return;
+      const parts = value.split(bareLocalMediaRe);
+      if (parts.length < 2) return;
+      const frag = document.createDocumentFragment();
+      parts.forEach((part) => {
+        // Captured media parts always start with https://.../v1/files/ or /v1/files/
+        const isVideo = /^https?:\/\/\S+\/v1\/files\/video\?/i.test(part)
+          || /^\/v1\/files\/video\?/i.test(part);
+        const isImage = /^https?:\/\/\S+\/v1\/files\/image\?/i.test(part)
+          || /^\/v1\/files\/image\?/i.test(part);
+        if (isVideo) {
+          const cleaned = part.replace(/[.,;:!?)。）」】]+$/u, '');
+          const video = document.createElement('video');
+          video.controls = true;
+          video.preload = 'metadata';
+          video.src = cleaned;
+          frag.appendChild(video);
+          const trail = part.slice(cleaned.length);
+          if (trail) frag.appendChild(document.createTextNode(trail));
+        } else if (isImage) {
+          const cleaned = part.replace(/[.,;:!?)。）」】]+$/u, '');
+          const img = document.createElement('img');
+          img.src = cleaned;
+          img.alt = 'image';
+          img.loading = 'lazy';
+          frag.appendChild(img);
+          const trail = part.slice(cleaned.length);
+          if (trail) frag.appendChild(document.createTextNode(trail));
+        } else if (part) {
+          frag.appendChild(document.createTextNode(part));
+        }
+      });
+      node.parentNode && node.parentNode.replaceChild(frag, node);
+    });
+
     card.querySelectorAll('video').forEach((video) => {
       if (video.dataset.proxyHintBound === '1') return;
       video.dataset.proxyHintBound = '1';
@@ -559,7 +772,11 @@
     }
 
     if (role === 'assistant') {
-      card.innerHTML = renderRichMarkdown(content);
+      // Ensure image/video markdown is on its own line for robust parsing
+      let normalized = String(content || '');
+      normalized = normalized.replace(/([^\n])(!\[[^\]]*\]\([^)]+\))/g, '$1\n\n$2');
+      normalized = normalized.replace(/([^\n])(\[video\]\([^)]+\))/gi, '$1\n\n$2');
+      card.innerHTML = renderRichMarkdown(normalized);
       enhanceMediaElements(card);
       return;
     }

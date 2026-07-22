@@ -18,7 +18,6 @@
   },
   "header": {
     "account": "Account Management",
-    "stats": "Usage Stats",
     "config": "Configuration Management",
     "cache": "Cache Management",
     "languageLabel": "Language",
@@ -34,7 +33,8 @@
     "versionUnavailable": "Failed to check for updates.",
     "versionNotesEmpty": "No release notes available.",
     "versionOpenRelease": "Open Release",
-    "versionClose": "Close"
+    "versionClose": "Close",
+    "stats": "Usage Stats"
   },
   "webui": {
     "header": {
@@ -163,27 +163,13 @@
     "statCooling": "Rate-Limited",
     "statInvalid": "Abnormal",
     "statDisabled": "Disabled",
-    "statOidcMissing": "No OIDC",
-    "actionOidcConvert": "Convert OIDC",
-    "actionOidcConvertN": "Convert OIDC ({n})",
-    "actionOidcConverting": "Converting…",
-    "oidcQueueHint": "Queue {n}",
-    "oidcConvertConfirm": "Enqueue {n} account(s) without OIDC for background batch conversion. Continue?",
-    "oidcConvertQueued": "Queued {n}; converting in background",
-    "oidcConvertFailed": "Failed to start OIDC conversion",
     "statCalls": "Total Calls",
     "statSuccessTotal": "Successful Calls",
     "statAuto": "Auto Balance",
     "statFast": "Fast Balance",
     "statExpert": "Expert Balance",
     "statHeavy": "Heavy Balance",
-    "statConsole": "Console Balance",
-    "statCli": "Grok 4.5 Balance",
     "filterStatusLabel": "Status",
-    "filterOidcLabel": "OIDC",
-    "filterOidcAll": "All",
-    "filterOidcYes": "Yes",
-    "filterOidcNo": "No",
     "filterNsfwLabel": "NSFW",
     "filterTypeLabel": "Type",
     "filterStatusAll": "All",
@@ -207,9 +193,6 @@
     "colToken": "Token",
     "colType": "Account Type",
     "colStatus": "Runtime Status",
-    "colOidc": "OIDC",
-    "oidcYes": "Yes",
-    "oidcNo": "No",
     "colQuota": "Quota",
     "colSuccess": "Success",
     "colFail": "Failed",
@@ -315,12 +298,12 @@
       "heavy": "Heavy"
     },
     "mode": {
-      "cli": "Grok 4.5",
       "auto": "Auto",
       "fast": "Fast",
       "expert": "Expert",
       "heavy": "Heavy",
-      "grok_4_3": "Grok 4.3 Beta"
+      "grok_4_3": "Grok 4.3 Beta",
+      "cli": "Grok 4.5"
     },
     "status": {
       "active": "Active",
@@ -328,7 +311,24 @@
       "disabled": "Disabled",
       "expired": "Expired",
       "invalid": "Abnormal"
-    }
+    },
+    "statOidcMissing": "No OIDC",
+    "actionOidcConvert": "Convert OIDC",
+    "actionOidcConvertN": "Convert OIDC ({n})",
+    "actionOidcConverting": "Converting…",
+    "oidcQueueHint": "Queue {n}",
+    "oidcConvertConfirm": "Enqueue {n} account(s) without OIDC for background batch conversion. Continue?",
+    "oidcConvertQueued": "Queued {n}; converting in background",
+    "oidcConvertFailed": "Failed to start OIDC conversion",
+    "statConsole": "Console Balance",
+    "statCli": "Grok 4.5 Balance",
+    "filterOidcLabel": "OIDC",
+    "filterOidcAll": "All",
+    "filterOidcYes": "Yes",
+    "filterOidcNo": "No",
+    "colOidc": "OIDC",
+    "oidcYes": "Yes",
+    "oidcNo": "No"
   },
   "config": {
     "pageTitle": "Grok2API - Configuration Management",
@@ -415,6 +415,10 @@
           "label": "API Access Key",
           "desc": "Authentication key for the OpenAI-compatible API. Separate multiple values with commas. Leave blank to disable authentication."
         },
+        "corsOrigins": {
+          "label": "CORS Allowed Origins",
+          "desc": "Comma-separated Origin allow-list. Empty = allow all origins without credentials; when set, only listed origins are allowed and credentials are enabled."
+        },
         "webuiEnabled": {
           "label": "Enable WebUI",
           "desc": "Exposes the WebUI entry point. When disabled, related routes return 404."
@@ -474,6 +478,10 @@
         "videoFormat": {
           "label": "Video Output Format",
           "desc": "local_* modes download video assets to the server and deliver them through the local proxy. Configure the APP Base URL first and account for outbound bandwidth usage."
+        },
+        "imaginePublicVideoProxy": {
+          "label": "Imagine Public Video Proxy",
+          "desc": "When enabled, imagine-public videos returned by upstream are downloaded to the server and delivered through the local proxy. When disabled, public videos are returned directly."
         },
         "refreshEnabled": {
           "label": "Enable Quota Refresh",

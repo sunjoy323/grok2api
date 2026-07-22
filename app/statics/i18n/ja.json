@@ -168,13 +168,7 @@
     "statFast": "Fast 残高",
     "statExpert": "Expert 残高",
     "statHeavy": "Heavy 残高",
-    "statConsole": "Console 残高",
-    "statCli": "Grok 4.5 残高",
     "filterStatusLabel": "状態",
-    "filterOidcLabel": "OIDC",
-    "filterOidcAll": "すべて",
-    "filterOidcYes": "あり",
-    "filterOidcNo": "なし",
     "filterNsfwLabel": "NSFW",
     "filterTypeLabel": "タイプ",
     "filterStatusAll": "すべて",
@@ -198,9 +192,6 @@
     "colToken": "トークン",
     "colType": "アカウント種別",
     "colStatus": "実行状態",
-    "colOidc": "OIDC",
-    "oidcYes": "あり",
-    "oidcNo": "なし",
     "colQuota": "クォータ",
     "colSuccess": "成功",
     "colFail": "失敗",
@@ -304,12 +295,12 @@
       "heavy": "Heavy"
     },
     "mode": {
-      "cli": "Grok 4.5",
       "auto": "Auto",
       "fast": "Fast",
       "expert": "Expert",
       "heavy": "Heavy",
-      "grok_4_3": "Grok 4.3 Beta"
+      "grok_4_3": "Grok 4.3 Beta",
+      "cli": "Grok 4.5"
     },
     "status": {
       "active": "有効",
@@ -318,6 +309,15 @@
       "expired": "期限切れ",
       "invalid": "異常"
     },
+    "statConsole": "Console 残高",
+    "statCli": "Grok 4.5 残高",
+    "filterOidcLabel": "OIDC",
+    "filterOidcAll": "すべて",
+    "filterOidcYes": "あり",
+    "filterOidcNo": "なし",
+    "colOidc": "OIDC",
+    "oidcYes": "あり",
+    "oidcNo": "なし",
     "statOidcMissing": "OIDCなし",
     "actionOidcConvert": "OIDC変換",
     "actionOidcConvertN": "OIDC変換 ({n})",
@@ -455,7 +455,12 @@
           "desc": "有効にすると、WebSocket が返す imagine-public 画像をサーバーにダウンロードし、ローカルプロキシ経由で配信します。無効の場合、公開画像はそのまま返します。"
         },
         "videoFormat": {
-          "label": "動画出力形式"
+          "label": "動画出力形式",
+          "desc": "grok_url と grok_html は既定では Grok CDN のネイティブ URL を直接返します。local_* モードでは、先にサーバーへダウンロードしてからローカルプロキシ経由で再配信します。Imagine Public 動画プロキシを有効にすると、imagine-public 動画もローカルプロキシ経由になります。APP ベース URL を設定し、出帯域も考慮してください。"
+        },
+        "imaginePublicVideoProxy": {
+          "label": "Imagine Public 動画プロキシ",
+          "desc": "有効にすると、上流が返す imagine-public 動画をサーバーにダウンロードし、ローカルプロキシ経由で配信します。無効の場合、公開動画はそのまま返します。"
         },
         "refreshEnabled": {
           "label": "クォータ更新を有効化",

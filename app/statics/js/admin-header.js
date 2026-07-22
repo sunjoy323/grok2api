@@ -10,7 +10,6 @@ window.renderAdminHeader = async function renderAdminHeader() {
       return 'v1';
     }
   })();
-  const HEADER_HTML_CACHE_KEY = `grok2api.admin_header_html.${scriptVersion}`;
   const META_VERSION_CACHE_KEY = `grok2api.meta_version.${scriptVersion}`;
   let appVersion = '';
   let updateInfo = null;
@@ -542,23 +541,17 @@ window.renderAdminHeader = async function renderAdminHeader() {
     typeof html === 'string' && html.includes('data-nav="/admin/stats"');
 
   try {
-    const cachedHtml = window.__grok2apiAdminHeaderHtml || readSessionCache(HEADER_HTML_CACHE_KEY);
-    if (cachedHtml && isHeaderComplete(cachedHtml)) {
-      mount.innerHTML = cachedHtml;
-    } else {
-      if (cachedHtml) {
-        try { sessionStorage.removeItem(HEADER_HTML_CACHE_KEY); } catch {}
-        window.__grok2apiAdminHeaderHtml = '';
-      }
-      const res = await fetch(`/static/admin/header.html?v=${encodeURIComponent(scriptVersion)}`, {
-        cache: 'no-store',
-      });
-      if (!res.ok) throw new Error('header unavailable');
-      const html = await res.text();
-      mount.innerHTML = html;
-      window.__grok2apiAdminHeaderHtml = html;
-      writeSessionCache(HEADER_HTML_CACHE_KEY, html);
+    // No long-lived HTML cache (upstream): always fetch; keep stats-nav completeness check + version bust.
+    const res = await fetch(`/static/admin/header.html?v=${encodeURIComponent(scriptVersion)}`, {
+      cache: 'no-store',
+    });
+    if (!res.ok) throw new Error('header unavailable');
+    const html = await res.text();
+    if (!isHeaderComplete(html)) {
+      console.warn('admin header missing stats nav; rendering anyway');
     }
+    mount.innerHTML = html;
+
   } catch {
     mount.innerHTML = `
       <header class="admin-header">

@@ -6,11 +6,24 @@ import mimetypes
 from typing import Annotated, AsyncGenerator, AsyncIterable, Literal
 
 import orjson
-from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+import hmac
+
+from fastapi import APIRouter, Depends, File, Form, Header, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 
 from app.control.account.state_machine import is_manageable
-from app.platform.auth.middleware import verify_api_key
+from app.platform.auth.media_sign import verify_media_signature
+from app.platform.auth.middleware import (
+    _extract_bearer,
+    get_admin_key,
+    get_api_keys,
+    get_webui_key,
+    verify_api_key,
+)
+from app.platform.auth.session_cookie import (
+    SESSION_COOKIE_NAME,
+    verify_session_value,
+)
 from app.platform.errors import AppError, ValidationError
 from app.platform.logging.logger import logger
 from app.platform.storage import image_files_dir, video_files_dir
@@ -296,6 +309,7 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
 
         else:
             # reasoning_effort=None → config default; "none" → off; otherwise → on.
+            # CLI models also receive the raw effort string for low/medium/high.
             if req.reasoning_effort is None:
                 emit_think: bool | None = None
             else:
@@ -305,6 +319,7 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
                 messages=messages,
                 stream=is_stream,
                 emit_think=emit_think,
+                reasoning_effort=req.reasoning_effort,
                 tools=req.tools,
                 tool_choice=req.tool_choice,
                 temperature=req.temperature or 0.8,
@@ -350,7 +365,12 @@ async def chat_completions_endpoint(req: ChatCompletionRequest):
 
 
 async def _safe_sse_responses(stream) -> AsyncGenerator[str, None]:
-    """SSE wrapper that converts errors to Responses API error events."""
+    """SSE wrapper that converts errors to Responses API terminal events.
+
+    Codex (wire_api=responses) requires a terminal ``response.completed`` /
+    ``response.failed`` before the stream ends; a bare ``error`` event alone
+    surfaces as ``stream closed before response.completed``.
+    """
     try:
         async for chunk in stream:
             yield chunk
@@ -366,8 +386,25 @@ async def _safe_sse_responses(stream) -> AsyncGenerator[str, None]:
                 "code": None,
                 "param": None,
             }
+        # Standard error event (some clients read this)
         payload = orjson.dumps({"type": "error", **err}).decode()
         yield f"event: error\ndata: {payload}\n\n"
+        # Terminal failed response so Codex does not treat the stream as truncated
+        failed = orjson.dumps({
+            "type": "response.failed",
+            "response": {
+                "id": "resp_error",
+                "object": "response",
+                "status": "failed",
+                "error": {
+                    "message": err.get("message") or str(exc),
+                    "type": err.get("type") or "server_error",
+                    "code": err.get("code"),
+                },
+                "output": [],
+            },
+        }).decode()
+        yield f"event: response.failed\ndata: {failed}\n\n"
         yield "data: [DONE]\n\n"
 
 
@@ -574,13 +611,85 @@ async def image_edits(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/files/video", tags=[_TAG_FILES])
-async def serve_video(id: str = Query(..., description="Video file ID")):
-    """Serve a locally cached video by file ID."""
+def _media_auth_tokens() -> list[str]:
+    """Keys accepted as Authorization / x-api-key for local media."""
+    tokens: list[str] = list(get_api_keys())
+    admin = get_admin_key()
+    if admin:
+        tokens.append(admin)
+    webui = get_webui_key()
+    if webui:
+        tokens.append(webui)
+    return tokens
+
+
+def _require_media_access(
+    *,
+    media_kind: str,
+    file_id: str,
+    exp: str | None,
+    sig: str | None,
+    authorization: str | None,
+    x_api_key: str | None,
+    session_cookie: str | None,
+) -> None:
+    """Authorize local media via signature, login session cookie, or key header.
+
+    Accepted credentials (any one is enough):
+      1. HMAC signed query (``exp`` + ``sig``) — for embeds without cookies
+      2. Browser login session cookie (``grok2api_session``) set on admin/webui verify
+      3. ``Authorization: Bearer`` / ``x-api-key`` matching api_key, app_key, or webui_key
+    """
     import re
 
-    if not re.fullmatch(r"[0-9a-f\-]{16,36}", id):
+    if not re.fullmatch(r"[0-9a-f\-]{16,36}", file_id):
         raise ValidationError("Invalid file ID", param="id")
+
+    if verify_media_signature(media_kind, file_id, exp, sig):
+        return
+
+    if verify_session_value(session_cookie):
+        return
+
+    # Open WebUI (enabled, no webui_key): treat as public web session not required,
+    # but still do not open media anonymously — require cookie from /webui/api/verify.
+    token = _extract_bearer(authorization) or x_api_key
+    if token is not None:
+        allowed = _media_auth_tokens()
+        if any(hmac.compare_digest(token, k) for k in allowed):
+            return
+        raise ValidationError(
+            "Invalid media signature, session, or API key",
+            param="sig",
+            code="invalid_media_signature",
+        )
+
+    raise ValidationError(
+        "Missing media signature, login session, or API key",
+        param="sig",
+        code="invalid_media_signature",
+    )
+
+
+@router.get("/files/video", tags=[_TAG_FILES])
+async def serve_video(
+    request: Request,
+    id: str = Query(..., description="Video file ID"),
+    exp: str | None = Query(default=None, description="Signature expiry (unix seconds)"),
+    sig: str | None = Query(default=None, description="HMAC media signature"),
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None, alias="x-api-key"),
+):
+    """Serve a locally cached video by file ID (signed URL, login session, or key)."""
+    _require_media_access(
+        media_kind="video",
+        file_id=id,
+        exp=exp,
+        sig=sig,
+        authorization=authorization,
+        x_api_key=x_api_key,
+        session_cookie=request.cookies.get(SESSION_COOKIE_NAME),
+    )
 
     path = video_files_dir() / f"{id}.mp4"
     if path.exists():
@@ -590,12 +699,24 @@ async def serve_video(id: str = Query(..., description="Video file ID")):
 
 
 @router.get("/files/image", tags=[_TAG_FILES])
-async def serve_image(id: str = Query(..., description="Image file ID")):
-    """Serve a locally cached image by file ID."""
-    import re
-
-    if not re.fullmatch(r"[0-9a-f\-]{16,36}", id):
-        raise ValidationError("Invalid file ID", param="id")
+async def serve_image(
+    request: Request,
+    id: str = Query(..., description="Image file ID"),
+    exp: str | None = Query(default=None, description="Signature expiry (unix seconds)"),
+    sig: str | None = Query(default=None, description="HMAC media signature"),
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None, alias="x-api-key"),
+):
+    """Serve a locally cached image by file ID (signed URL, login session, or key)."""
+    _require_media_access(
+        media_kind="image",
+        file_id=id,
+        exp=exp,
+        sig=sig,
+        authorization=authorization,
+        x_api_key=x_api_key,
+        session_cookie=request.cookies.get(SESSION_COOKIE_NAME),
+    )
 
     img_dir = image_files_dir()
     for ext in (".jpg", ".png"):

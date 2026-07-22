@@ -24,7 +24,12 @@ services:
 
   # ── Privoxy: HTTP 代理，转发到 WARP SOCKS5 ───────────────────────────────
   privoxy:
-    image: ghcr.io/jiujiu532/privoxy-warp:latest
+    # 当前无公开远程镜像，默认本地构建；勿改为 ghcr 以免 compose 尝试 pull 失败
+    image: privoxy-warp:local
+    build:
+      context: .
+      dockerfile: Dockerfile.privoxy
+    pull_policy: build
     container_name: privoxy
     restart: unless-stopped
     ports:
@@ -43,8 +48,9 @@ services:
 
   # ── grok2api ──────────────────────────────────────────────────────────────
   grok2api:
-    # 使用本地源码构建（含 Grok 4.5 / SSO→OIDC 等能力）
-    # 代理：./scripts/docker-compose-with-proxy.sh build|up ...
+    # 本地源码构建；代理：./scripts/docker-compose-with-proxy.sh build|up ...
+    image: grok2api:local
+    pull_policy: build
     build:
       context: .
       dockerfile: Dockerfile
@@ -55,7 +61,7 @@ services:
         https_proxy: ${BUILD_HTTPS_PROXY:-}
         NO_PROXY: ${BUILD_NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
         no_proxy: ${BUILD_NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
-    image: grok2api:local
+
     container_name: grok2api
     restart: unless-stopped
     ports:

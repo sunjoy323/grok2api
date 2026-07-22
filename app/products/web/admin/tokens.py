@@ -678,39 +678,14 @@ def _oidc_convert_one(token: str) -> tuple[str, str | None]:
 
     Returns (status, error) where status is:
       ok | skipped | rate_limited | failed
+
+    Delegates to :func:`convert_oidc_one` so admin import, CLI repair workers,
+    and hot last-resort convert share the same per-SSO lock (avoids concurrent
+    device-flows revoking each other's refresh tokens).
     """
-    import time
+    from app.dataplane.reverse.protocol.xai_oidc import convert_oidc_one
 
-    from app.dataplane.reverse.protocol.xai_oidc import (
-        cache_put,
-        load_disk_cache,
-        save_disk_entry,
-        sso_key,
-        sso_to_oidc,
-    )
-    from app.platform.errors import UpstreamError
-
-    try:
-        # Skip if disk already has a fresh credential (from scripts or prior import).
-        disk = load_disk_cache()
-        existing = (disk.get("entries") or {}).get(sso_key(token))
-        if isinstance(existing, dict) and existing.get("access_token"):
-            exp = float(existing.get("expires_at") or 0)
-            if exp > time.time() + 120:
-                cache_put(token, existing)
-                return "skipped", None
-
-        cred = sso_to_oidc(token)
-        cache_put(token, cred)
-        save_disk_entry(token, cred)
-        return "ok", None
-    except UpstreamError as exc:
-        msg = str(exc)
-        if "rate_limited" in msg or "slow_down" in msg or "429" in msg:
-            return "rate_limited", msg
-        return "failed", msg
-    except Exception as exc:  # noqa: BLE001
-        return "failed", f"{type(exc).__name__}: {exc}"
+    return convert_oidc_one(token)
 
 
 # ---------------------------------------------------------------------------

@@ -18,7 +18,6 @@
   },
   "header": {
     "account": "账户管理",
-    "stats": "用量统计",
     "config": "配置管理",
     "cache": "缓存管理",
     "languageLabel": "语言",
@@ -34,7 +33,8 @@
     "versionUnavailable": "查询更新失败。",
     "versionNotesEmpty": "暂无更新说明。",
     "versionOpenRelease": "发布详情",
-    "versionClose": "关闭"
+    "versionClose": "关闭",
+    "stats": "用量统计"
   },
   "webui": {
     "header": {
@@ -163,27 +163,13 @@
     "statCooling": "限流账户",
     "statInvalid": "异常账户",
     "statDisabled": "禁用账户",
-    "statOidcMissing": "无 OIDC",
-    "actionOidcConvert": "转换 OIDC",
-    "actionOidcConvertN": "转换 OIDC ({n})",
-    "actionOidcConverting": "转换中…",
-    "oidcQueueHint": "队列 {n}",
-    "oidcConvertConfirm": "将把 {n} 个无 OIDC 的账号加入后台队列分批转换，是否继续？",
-    "oidcConvertQueued": "已入队 {n} 个，后台分批转换中",
-    "oidcConvertFailed": "OIDC 转换触发失败",
     "statCalls": "调用总数",
     "statSuccessTotal": "成功总数",
     "statAuto": "Auto 余额",
     "statFast": "Fast 余额",
     "statExpert": "Expert 余额",
     "statHeavy": "Heavy 余额",
-    "statConsole": "Console 余额",
-    "statCli": "Grok 4.5 余额",
     "filterStatusLabel": "状态",
-    "filterOidcLabel": "OIDC",
-    "filterOidcAll": "全部",
-    "filterOidcYes": "有",
-    "filterOidcNo": "无",
     "filterNsfwLabel": "NSFW",
     "filterTypeLabel": "类型",
     "filterStatusAll": "全部",
@@ -207,9 +193,6 @@
     "colToken": "Token",
     "colType": "账户类型",
     "colStatus": "运行状态",
-    "colOidc": "OIDC",
-    "oidcYes": "有",
-    "oidcNo": "无",
     "colQuota": "额度信息",
     "colSuccess": "成功",
     "colFail": "失败",
@@ -315,12 +298,12 @@
       "heavy": "Heavy"
     },
     "mode": {
-      "cli": "Grok 4.5",
       "auto": "Auto",
       "fast": "Fast",
       "expert": "Expert",
       "heavy": "Heavy",
-      "grok_4_3": "Grok 4.3 Beta"
+      "grok_4_3": "Grok 4.3 Beta",
+      "cli": "Grok 4.5"
     },
     "status": {
       "active": "正常",
@@ -328,7 +311,24 @@
       "disabled": "禁用",
       "expired": "过期",
       "invalid": "异常"
-    }
+    },
+    "statOidcMissing": "无 OIDC",
+    "actionOidcConvert": "转换 OIDC",
+    "actionOidcConvertN": "转换 OIDC ({n})",
+    "actionOidcConverting": "转换中…",
+    "oidcQueueHint": "队列 {n}",
+    "oidcConvertConfirm": "将把 {n} 个无 OIDC 的账号加入后台队列分批转换，是否继续？",
+    "oidcConvertQueued": "已入队 {n} 个，后台分批转换中",
+    "oidcConvertFailed": "OIDC 转换触发失败",
+    "statConsole": "Console 余额",
+    "statCli": "Grok 4.5 余额",
+    "filterOidcLabel": "OIDC",
+    "filterOidcAll": "全部",
+    "filterOidcYes": "有",
+    "filterOidcNo": "无",
+    "colOidc": "OIDC",
+    "oidcYes": "有",
+    "oidcNo": "无"
   },
   "config": {
     "pageTitle": "Grok2API - 配置管理",
@@ -415,6 +415,10 @@
           "label": "API 调用密钥",
           "desc": "OpenAI 兼容 API 的鉴权密钥。多个值请使用英文逗号分隔；留空则禁用鉴权。"
         },
+        "corsOrigins": {
+          "label": "CORS 允许来源",
+          "desc": "逗号分隔的 Origin 白名单。留空=允许所有来源且不带 credentials；填写后仅放行列表内 Origin 并启用 credentials。"
+        },
         "webuiEnabled": {
           "label": "启用 WebUI",
           "desc": "开放 WebUI 功能入口。关闭后相关路由将返回 404。"
@@ -459,18 +463,6 @@
           "label": "正文追加信源",
           "desc": "搜索信源始终以 search_sources 字段输出。此选项控制是否同时在正文末尾追加 ## Sources 段落（兼容文本解析客户端）。"
         },
-        "usageStatsEnabled": {
-          "label": "启用用量统计",
-          "desc": "按小时 × 模型 × API Key 聚合 token 用量；关闭后热路径完全跳过统计。"
-        },
-        "usageStatsFlushSec": {
-          "label": "统计落盘间隔(秒)",
-          "desc": "内存聚合写入磁盘的间隔，建议 30 或 60。"
-        },
-        "usageStatsRetentionDays": {
-          "label": "统计保留天数",
-          "desc": "小时粒度数据的最长保留天数，过期自动清理。"
-        },
         "customInstruction": {
           "label": "全局附加指令",
           "desc": "为每次请求注入统一的 system 消息，用于约束模型行为或固定角色设定。"
@@ -486,6 +478,10 @@
         "videoFormat": {
           "label": "视频返回格式",
           "desc": "local_* 模式会先将视频下载至服务端，再通过本地 URL 代理分发；请确保已配置 APP 访问地址，并评估出站带宽消耗。"
+        },
+        "imaginePublicVideoProxy": {
+          "label": "Imagine Public 视频代理",
+          "desc": "开启后将上游返回的 imagine-public 视频下载到服务端，再通过本地 URL 代理分发；关闭时保持公开视频直返。"
         },
         "refreshEnabled": {
           "label": "启用配额刷新",
@@ -659,6 +655,18 @@
         "logMaxFiles": {
           "label": "日志保留天数",
           "desc": "按天轮转时最多保留的日志文件数量。默认 7。"
+        },
+        "usageStatsEnabled": {
+          "label": "启用用量统计",
+          "desc": "按小时 × 模型 × API Key 聚合 token 用量；关闭后热路径完全跳过统计。"
+        },
+        "usageStatsFlushSec": {
+          "label": "统计落盘间隔(秒)",
+          "desc": "内存聚合写入磁盘的间隔，建议 30 或 60。"
+        },
+        "usageStatsRetentionDays": {
+          "label": "统计保留天数",
+          "desc": "小时粒度数据的最长保留天数，过期自动清理。"
         }
       }
     }

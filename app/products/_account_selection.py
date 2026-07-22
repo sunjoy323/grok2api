@@ -46,6 +46,7 @@ async def reserve_account(
     spec: ModelSpec,
     *,
     exclude_tokens: list[str] | None = None,
+    prefer_tokens: list[str] | None = None,
     now_s_override: int | None = None,
 ):
     """Reserve an account and return ``(lease, selected_mode_id)``.
@@ -53,6 +54,10 @@ async def reserve_account(
     Returns ``(None, original_mode_id)`` when no account is available. Under the
     random strategy no on-demand refresh fallback is attempted — upstream quota
     data is never probed.
+
+    *prefer_tokens* is a soft preference (e.g. OIDC-warm SSO tokens for CLI).
+    When none of the preferred accounts are free, selection falls back to the
+    full candidate pool.
     """
     original_mode_id = int(spec.mode_id)
 
@@ -63,6 +68,7 @@ async def reserve_account(
                 mode_id=candidate_mode_id,
                 now_s_override=now_s_override,
                 exclude_tokens=exclude_tokens,
+                prefer_tokens=prefer_tokens,
             )
             if lease is not None:
                 return lease, candidate_mode_id

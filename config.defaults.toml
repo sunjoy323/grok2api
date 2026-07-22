@@ -1,11 +1,14 @@
 # ==================== 访问控制 ====================
 [app]
-# 管理后台密码
+# 管理后台密码（请在首次登录后立即修改；默认值会在启动日志中告警）
 app_key = "grok2api"
 # 应用访问地址
 app_url = ""
-# API 调用密钥
+# API 调用密钥（留空则 /v1 不鉴权；生产环境务必设置）
 api_key = ""
+# CORS 允许来源：空 / 省略 = 允许所有来源且不带 credentials；
+# 设为列表时启用 credentials，例如 ["https://your.domain.com"]
+cors_origins = []
 # 启用 WebUI
 webui_enabled = false
 # WebUI 访问密码
@@ -73,6 +76,9 @@ imagine_public_image_proxy = false
 #   grok_html — HTML <video> 标签，src 为 Grok CDN URL
 #   local_html — HTML <video> 标签，src 为本地代理 URL
 video_format = "grok_url"
+# 上游返回的 imagine-public 视频默认直返；开启后下载到本地并返回本地代理 URL
+# （在 video_format 为 grok_url / grok_html 时仍会强制本地代理）
+imagine_public_video_proxy = false
 
 
 # ==================== 本地缓存 ====================
@@ -81,6 +87,8 @@ video_format = "grok_url"
 image_max_mb = 0
 # 视频缓存上限（MB），0 = 不限制；超限后按最旧文件优先清理，并回落到上限的 60%
 video_max_mb = 0
+# 本地媒体代理 URL 签名有效期（秒）；Markdown/HTML 内嵌时用签名访问，无需 Authorization
+signed_url_ttl_sec = 604800
 
 
 # ==================== 代理配置 ====================
@@ -150,6 +158,13 @@ max_inflight = 8
 # ==================== 对话配置 ====================
 [chat]
 timeout = 60
+# grok-4.5 / CLI：默认 reasoning_effort（low|medium|high）；客户端可覆盖
+cli_reasoning_effort = "medium"
+# CLI 换号次数下限（OIDC 未就绪时快速换号；≥ retry.max_retries）
+cli_account_retries = 8
+# 最后一次仍无 OIDC 且进程内没有任何 warm 凭证时，才热路径 convert
+# （池中已有 warm 账号时只换号，避免无谓 ~10s 阻塞）
+cli_oidc_hot_convert_last_resort = true
 
 
 # ==================== 图像配置 ====================

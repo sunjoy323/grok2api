@@ -168,13 +168,7 @@
     "statFast": "Saldo Fast",
     "statExpert": "Saldo Expert",
     "statHeavy": "Saldo Heavy",
-    "statConsole": "Saldo Console",
-    "statCli": "Saldo Grok 4.5",
     "filterStatusLabel": "Estado",
-    "filterOidcLabel": "OIDC",
-    "filterOidcAll": "Todas",
-    "filterOidcYes": "Sí",
-    "filterOidcNo": "No",
     "filterNsfwLabel": "NSFW",
     "filterTypeLabel": "Tipo",
     "filterStatusAll": "Todas",
@@ -198,9 +192,6 @@
     "colToken": "Token",
     "colType": "Tipo de cuenta",
     "colStatus": "Estado operativo",
-    "colOidc": "OIDC",
-    "oidcYes": "Sí",
-    "oidcNo": "No",
     "colQuota": "Cuota",
     "colSuccess": "Éxito",
     "colFail": "Error",
@@ -304,12 +295,12 @@
       "heavy": "Heavy"
     },
     "mode": {
-      "cli": "Grok 4.5",
       "auto": "Auto",
       "fast": "Fast",
       "expert": "Expert",
       "heavy": "Heavy",
-      "grok_4_3": "Grok 4.3 Beta"
+      "grok_4_3": "Grok 4.3 Beta",
+      "cli": "Grok 4.5"
     },
     "status": {
       "active": "Activa",
@@ -318,6 +309,15 @@
       "expired": "Expirada",
       "invalid": "Anómalo"
     },
+    "statConsole": "Saldo Console",
+    "statCli": "Saldo Grok 4.5",
+    "filterOidcLabel": "OIDC",
+    "filterOidcAll": "Todas",
+    "filterOidcYes": "Sí",
+    "filterOidcNo": "No",
+    "colOidc": "OIDC",
+    "oidcYes": "Sí",
+    "oidcNo": "No",
     "statOidcMissing": "No OIDC",
     "actionOidcConvert": "Convert OIDC",
     "actionOidcConvertN": "Convert OIDC ({n})",
@@ -455,7 +455,12 @@
           "desc": "Cuando está activado, las imágenes imagine-public devueltas por WebSocket se descargan en el servidor y se entregan mediante el proxy local. Cuando está desactivado, las imágenes públicas se devuelven directamente."
         },
         "videoFormat": {
-          "label": "Formato de salida de video"
+          "label": "Formato de salida de video",
+          "desc": "grok_url y grok_html devuelven directamente la dirección nativa del CDN de Grok de forma predeterminada. Los modos local_* descargan primero los vídeos en el servidor y los vuelven a exponer mediante el proxy local. Cuando el proxy de vídeo Imagine Public está activado, los vídeos imagine-public también se sirven mediante el proxy local. Configure la URL base de APP y tenga en cuenta el ancho de banda de salida."
+        },
+        "imaginePublicVideoProxy": {
+          "label": "Proxy de vídeo Imagine Public",
+          "desc": "Cuando está activado, los vídeos imagine-public devueltos por el origen se descargan en el servidor y se entregan mediante el proxy local. Cuando está desactivado, los vídeos públicos se devuelven directamente."
         },
         "refreshEnabled": {
           "label": "Activar actualización de cuota",

@@ -1,9 +1,10 @@
 services:
   grok2api:
     container_name: grok2api
-    # 使用本地源码构建（含 Grok 4.5 / SSO→OIDC 等能力）
-    # 代理：./scripts/docker-compose-with-proxy.sh build|up ...
+    # 本地源码构建；代理：./scripts/docker-compose-with-proxy.sh build|up ...
     # BUILD_* 供构建容器内 apk/uv/cargo 下载；默认空，不影响无代理构建
+    image: grok2api:local
+    pull_policy: build
     build:
       context: .
       dockerfile: Dockerfile
@@ -14,7 +15,7 @@ services:
         https_proxy: ${BUILD_HTTPS_PROXY:-}
         NO_PROXY: ${BUILD_NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
         no_proxy: ${BUILD_NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
-    image: grok2api:local
+
     ports:
       - "${HOST_PORT:-8000}:${SERVER_PORT:-8000}"
     environment:

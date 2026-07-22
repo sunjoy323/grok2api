@@ -18,6 +18,7 @@ from app.platform.tokens import (
     estimate_tokens,
     estimate_tool_call_tokens,
 )
+from app.dataplane.reverse.protocol.sandbox_artifacts import materialize_sandbox_media
 from app.control.account.runtime import get_refresh_service
 from app.control.account.invalid_credentials import feedback_kind_for_error
 from app.control.model.registry import resolve as resolve_model
@@ -224,14 +225,17 @@ def _is_imagine_public_url(url: str) -> bool:
 
 
 async def _resolve_image(token: str, url: str, image_id: str) -> str:
-    """Return the image embed text for the response body based on image_format config.
+    """Return chat image embed based on image_format config.
+
+    Chat always returns markdown ``![image](...)`` (never a bare URL) so
+    clients render ``<img>`` instead of a plain ``<a>`` link.
 
     Format values:
-      grok_url  — raw CDN URL (no download)
-      local_url — download + serve locally, return accessible URL
-      grok_md   — ![image](grok_cdn_url) markdown
-      local_md  — ![image](local_url) markdown
-      base64    — ![image](data:...) markdown
+      grok_url  — ![image](grok_cdn_url)
+      local_url — download + ![image](local_proxy_url)
+      grok_md   — same as grok_url
+      local_md  — same as local_url
+      base64    — ![image](data:...)
     """
     cfg = get_config()
     fmt = _normalize_image_format(cfg.get_str("features.image_format", "grok_url"))
@@ -242,9 +246,7 @@ async def _resolve_image(token: str, url: str, image_id: str) -> str:
     )
 
     # Formats that don't need downloading
-    if fmt == "grok_url" and not proxy_imagine_public:
-        return url
-    if fmt == "grok_md" and not proxy_imagine_public:
+    if fmt in {"grok_url", "grok_md"} and not proxy_imagine_public:
         return f"![image]({url})"
 
     # Formats that require downloading
@@ -254,24 +256,19 @@ async def _resolve_image(token: str, url: str, image_id: str) -> str:
         logger.warning(
             "chat image download failed: fallback_to=upstream_url error={}", exc
         )
-        return url
+        return f"![image]({url})"
 
     if fmt == "base64":
         b64 = base64.b64encode(raw).decode()
         return f"![image](data:{mime};base64,{b64})"
 
-    # local_url / local_md: save to disk and return local path
+    # local_url / local_md / forced imagine-public proxy
+    from app.platform.auth.media_sign import build_signed_media_url
+
     file_id = await asyncio.to_thread(_save_image, raw, mime, image_id)
     app_url = cfg.get_str("app.app_url", "").rstrip("/")
-    local_url = (
-        f"{app_url}/v1/files/image?id={file_id}"
-        if app_url
-        else f"/v1/files/image?id={file_id}"
-    )
-
-    if fmt in {"grok_url", "local_url"}:
-        return local_url
-    return f"![image]({local_url})"  # grok_md / local_md
+    local_url = build_signed_media_url("image", file_id, app_url=app_url)
+    return f"![image]({local_url})"
 
 
 def _normalize_image_format(value: str | None) -> str:
@@ -282,6 +279,21 @@ def _normalize_image_format(value: str | None) -> str:
             param="features.image_format",
         )
     return fmt
+
+
+async def _apply_sandbox_media(adapter: StreamAdapter, text: str) -> tuple[str, list[str]]:
+    """Materialise code_execution artifact media and rewrite sandbox paths."""
+    if not text and not adapter.sandbox_media_paths and not adapter.sandbox_media_b64:
+        return text, []
+    try:
+        return await materialize_sandbox_media(
+            text,
+            known_paths=set(adapter.sandbox_media_paths),
+            known_b64=dict(adapter.sandbox_media_b64),
+        )
+    except Exception as exc:
+        logger.warning("sandbox media materialize failed: error={}", exc)
+        return text, []
 
 
 # 精确匹配 grok2api 注入的 Sources 段落（含标记行），用于多轮对话剥离
@@ -453,6 +465,7 @@ async def completions(
     messages: list[dict],
     stream: bool | None = None,
     emit_think: bool | None = None,
+    reasoning_effort: str | None = None,
     tools: list[dict] | None = None,
     tool_choice: Any = None,
     temperature: float = 0.8,
@@ -487,6 +500,7 @@ async def completions(
             messages=messages,
             stream=is_stream,
             emit_think=emit_think,
+            reasoning_effort=reasoning_effort,
             temperature=temperature,
             top_p=top_p,
             tools=tools,
@@ -558,6 +572,10 @@ async def completions(
                         ended = False
                         sieve = ToolSieve(tool_names)
                         tool_calls_emitted = False
+                        # Buffer final text when code_execution may dump base64 media,
+                        # so clients never see huge B64 blobs in the live stream.
+                        buffered_final: list[str] = []
+                        text_finished = False
                         yield ": heartbeat\n\n"
                         async for line in _stream_chat(
                             token=token,
@@ -578,13 +596,20 @@ async def completions(
                                 if tool_calls_emitted:
                                     break  # already sent [DONE], drop remaining events
                                 if ev.kind == "text":
+                                    # Keep draining after soft_stop so late image cards arrive,
+                                    # but do not emit more text once the final answer finished.
+                                    if text_finished:
+                                        continue
                                     if tool_names:
                                         safe_text, parsed_calls = sieve.feed(ev.content)
                                         if safe_text:
-                                            chunk = make_stream_chunk(
-                                                response_id, model, safe_text
-                                            )
-                                            yield f"data: {orjson.dumps(chunk).decode()}\n\n"
+                                            if adapter.should_buffer_final_text:
+                                                buffered_final.append(safe_text)
+                                            else:
+                                                chunk = make_stream_chunk(
+                                                    response_id, model, safe_text
+                                                )
+                                                yield f"data: {orjson.dumps(chunk).decode()}\n\n"
                                         if parsed_calls is not None:
                                             for i, tc in enumerate(parsed_calls):
                                                 chunk = make_tool_call_chunk(
@@ -620,11 +645,14 @@ async def completions(
                                             ended = True
                                             break  # stop processing remaining events in this batch
                                     else:
-                                        chunk = make_stream_chunk(
-                                            response_id, model, ev.content
-                                        )
-                                        yield f"data: {orjson.dumps(chunk).decode()}\n\n"
-                                elif ev.kind == "thinking" and emit_think:
+                                        if adapter.should_buffer_final_text:
+                                            buffered_final.append(ev.content)
+                                        else:
+                                            chunk = make_stream_chunk(
+                                                response_id, model, ev.content
+                                            )
+                                            yield f"data: {orjson.dumps(chunk).decode()}\n\n"
+                                elif ev.kind == "thinking" and emit_think and not text_finished:
                                     chunk = make_thinking_chunk(
                                         response_id, model, ev.content
                                     )
@@ -632,8 +660,9 @@ async def completions(
                                 elif ev.kind == "annotation" and ev.annotation_data:
                                     collected_annotations.append(ev.annotation_data)
                                 elif ev.kind == "soft_stop":
-                                    ended = True
-                                    break
+                                    # Do NOT break the SSE reader here — image cards /
+                                    # modelResponse may still arrive after soft_stop.
+                                    text_finished = True
                             if ended:
                                 break
 
@@ -678,10 +707,38 @@ async def completions(
                         if not tool_calls_emitted:
                             for url, img_id in adapter.image_urls:
                                 img_text = await _resolve_image(token, url, img_id)
+                                # Leading newlines so markdown parsers always treat it as an image
                                 chunk = make_stream_chunk(
-                                    response_id, model, img_text + "\n"
+                                    response_id, model, "\n\n" + img_text + "\n"
                                 )
                                 yield f"data: {orjson.dumps(chunk).decode()}\n\n"
+
+                            # code_execution sandbox media → local video/image proxy URLs
+                            # Prefer buffered final text (never streamed base64 dumps).
+                            source_text = (
+                                "".join(buffered_final)
+                                if buffered_final
+                                else "".join(adapter.text_buf)
+                            )
+                            rewritten, sandbox_embeds = await _apply_sandbox_media(
+                                adapter, source_text
+                            )
+                            if buffered_final:
+                                # Flush cleaned final answer once (paths rewritten, B64 stripped).
+                                # rewritten already includes appended [video]/![image] embeds.
+                                if rewritten:
+                                    chunk = make_stream_chunk(
+                                        response_id, model, rewritten
+                                    )
+                                    yield f"data: {orjson.dumps(chunk).decode()}\n\n"
+                            else:
+                                # Text already streamed; append missing playable embeds only
+                                for embed in sandbox_embeds:
+                                    if embed and embed not in source_text:
+                                        chunk = make_stream_chunk(
+                                            response_id, model, "\n\n" + embed
+                                        )
+                                        yield f"data: {orjson.dumps(chunk).decode()}\n\n"
 
                             references = adapter.references_suffix()
                             if references:
@@ -715,11 +772,12 @@ async def completions(
                                 ok=True,
                             )
                             logger.info(
-                                "chat stream completed: attempt={}/{} model={} image_count={}",
+                                "chat stream completed: attempt={}/{} model={} image_count={} sandbox_media={}",
                                 attempt + 1,
                                 max_retries + 1,
                                 model,
                                 len(adapter.image_urls),
+                                len(adapter.sandbox_media_paths),
                             )
 
                     except UpstreamError as exc:
@@ -874,9 +932,17 @@ async def completions(
             if isinstance(img_text, BaseException):
                 logger.warning("chat image resolve failed: error={}", img_text)
             elif isinstance(img_text, str):
-                if full_text:
-                    full_text += "\n\n"
-                full_text += img_text
+                if full_text and not full_text.endswith("\n"):
+                    full_text += "\n"
+                full_text += "\n" + img_text
+
+    full_text, sandbox_embeds = await _apply_sandbox_media(adapter, full_text)
+    # Non-stream: path already rewritten in full_text; append embeds only if missing
+    for embed in sandbox_embeds:
+        if embed and embed not in full_text:
+            if full_text:
+                full_text += "\n\n"
+            full_text += embed
 
     references = adapter.references_suffix()
     if references:
