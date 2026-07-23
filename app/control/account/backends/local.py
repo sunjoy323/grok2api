@@ -58,9 +58,17 @@ class LocalAccountRepository:
         return conn
 
     def _init_sync(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(self._connect()) as conn:
-            conn.executescript(f"""
+        parent = self._path.parent
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"account db parent not writable: path={parent} error={exc}. "
+                "On Docker bind mounts, run: chown -R 1000:1000 ./data ./logs"
+            ) from exc
+        try:
+            with closing(self._connect()) as conn:
+                conn.executescript(f"""
                 CREATE TABLE IF NOT EXISTS {_META} (
                     key   TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -103,10 +111,17 @@ class LocalAccountRepository:
                 CREATE INDEX IF NOT EXISTS idx_acc_live_updated
                     ON {_TBL} (updated_at DESC) WHERE deleted_at IS NULL;
             """)
-            self._ensure_column_sync(conn, "quota_grok_4_3", "TEXT NOT NULL DEFAULT '{}'")
-            self._ensure_column_sync(conn, "quota_console", "TEXT NOT NULL DEFAULT '{}'")
-            self._ensure_column_sync(conn, "quota_cli", "TEXT NOT NULL DEFAULT '{}'")
-            conn.commit()
+                self._ensure_column_sync(conn, "quota_grok_4_3", "TEXT NOT NULL DEFAULT '{}'")
+                self._ensure_column_sync(conn, "quota_console", "TEXT NOT NULL DEFAULT '{}'")
+                self._ensure_column_sync(conn, "quota_cli", "TEXT NOT NULL DEFAULT '{}'")
+                conn.commit()
+        except sqlite3.OperationalError as exc:
+            raise RuntimeError(
+                f"account sqlite init failed: path={self._path} error={exc}. "
+                "Usually the Docker data volume is not writable by uid=1000, or the "
+                "filesystem cannot host SQLite (NFS/CIFS/full disk). Fix with: "
+                "chown -R 1000:1000 ./data ./logs  (and free disk / use local ext4|xfs)"
+            ) from exc
 
     @staticmethod
     def _ensure_column_sync(conn: sqlite3.Connection, name: str, ddl: str) -> None:
