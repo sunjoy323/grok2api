@@ -404,7 +404,8 @@
         },
         "cliAccountSelection": {
           "warmPrefer": "Warm 优先（默认）",
-          "rotate": "轮询优先（更均匀）"
+          "rotate": "轮询优先（更均匀）",
+          "rotateWarm": "轮询 + 后台养票"
         }
       },
       "fields": {
@@ -675,8 +676,8 @@
         },
         "cliAccountSelection": {
           "label": "CLI 选号策略",
-          "desc": "仅影响 grok-4.5 / CLI。Warm 优先：优先已有 OIDC 的号；轮询优先：整池分散，更均匀。",
-          "help": "warm_prefer 适合冷热混杂；rotate 适合大号池、希望压低单号 429。"
+          "desc": "仅影响 grok-4.5 / CLI。Warm 优先：优先 OIDC 就绪号；轮询：整池分散；轮询+养票：分散 + 后台 refresh-only。",
+          "help": "warm_prefer 适合冷热混杂；rotate 适合大号池压 429；rotate_warm 推荐大号池（轮询+后台养票）。"
         },
         "cliAccountRetries": {
           "label": "CLI 换号次数下限",
@@ -685,6 +686,30 @@
         "cliReasoningEffort": {
           "label": "CLI 默认思考强度",
           "desc": "客户端未指定时 CLI 默认 reasoning_effort。"
+        },
+        "cliOidcBgRefresh": {
+          "label": "强制开启后台 OIDC 养票",
+          "desc": "仅 refresh 续期，不做 device convert。rotate_warm 自动开启。"
+        },
+        "cliOidcBgRefreshIntervalSec": {
+          "label": "养票循环间隔（秒）",
+          "desc": "后台 refresh 循环间隔，最小 30。"
+        },
+        "cliOidcBgRefreshLeadSec": {
+          "label": "养票提前续期（秒）",
+          "desc": "access 过期前多久开始续期，默认 3600。"
+        },
+        "cliOidcBgRefreshMaxPerCycle": {
+          "label": "每轮最多养票数",
+          "desc": "每轮最多处理条目数，防止大号池一轮打满。"
+        },
+        "cliOidcBgRefreshConcurrency": {
+          "label": "养票并发",
+          "desc": "批内并发 refresh 数，建议 1–2。"
+        },
+        "cliOidcBgRefreshItemDelaySec": {
+          "label": "养票串行间隔（秒）",
+          "desc": "并发=1 时条目间的间隔。"
         },
         "cliOidcHotConvertLastResort": {
           "label": "无 Warm 时允许热路径 Convert",

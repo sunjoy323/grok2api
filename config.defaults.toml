@@ -164,8 +164,22 @@ cli_reasoning_effort = "medium"
 cli_account_retries = 8
 # CLI 选号策略：
 #   warm_prefer — 优先已有可用 OIDC 的账号（子集内再按健康/配额评分；冷号难轮到）
-#   rotate      — 不优先 warm，在整池按评分轮转（含「最近用过」惩罚，更均匀、更不易粘号）
+#   rotate      — 不优先 warm，整池按评分轮转（更均匀；请求时可能 refresh 产生 oidc_ms）
+#   rotate_warm — 轮询选号 + 后台仅 refresh 养票（推荐大号池：分散 + 降低热路径 oidc_ms）
 cli_account_selection = "warm_prefer"
+# 后台 OIDC 养票（refresh-only，不做 device convert）。
+# rotate_warm 策略下自动开启；其它策略仅当 cli_oidc_bg_refresh=true 时开启。
+cli_oidc_bg_refresh = false
+# 养票循环间隔（秒）
+cli_oidc_bg_refresh_interval_sec = 120
+# 提前多久开始续期（秒）；access 常见 ~6h，3600=过期前 1h 续
+cli_oidc_bg_refresh_lead_sec = 3600
+# 每轮最多处理条数（防止 7000 号一轮打满）
+cli_oidc_bg_refresh_max_per_cycle = 64
+# 批内并发（refresh 轻量；过大易触发 auth 限流）
+cli_oidc_bg_refresh_concurrency = 2
+# 批内串行间隔（并发=1 时更有意义）
+cli_oidc_bg_refresh_item_delay_sec = 0.25
 # 最后一次仍无 OIDC 且进程内没有任何 warm 凭证时，才热路径 convert
 # （池中已有 warm 账号时只换号，避免无谓 ~10s 阻塞）
 cli_oidc_hot_convert_last_resort = true

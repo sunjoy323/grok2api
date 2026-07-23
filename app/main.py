@@ -302,6 +302,23 @@ async def lifespan(app: FastAPI):
     usage_recorder.start()
     app.state.usage_recorder = usage_recorder
 
+    # 9. OIDC background refresh-only warm-up (rotate_warm / opt-in).
+    #    Leader only — paced refresh_token renewals, never device convert.
+    if is_leader:
+        try:
+            from app.dataplane.reverse.protocol.xai_oidc import (
+                start_oidc_bg_refresh_worker,
+            )
+
+            if start_oidc_bg_refresh_worker():
+                logger.info(
+                    "oidc bg refresh worker: started (enable via "
+                    "chat.cli_account_selection=rotate_warm or "
+                    "chat.cli_oidc_bg_refresh=true)"
+                )
+        except Exception as exc:
+            logger.warning("oidc bg refresh worker start failed: {}", exc)
+
     # Security posture warnings (never fail startup — operators may self-host on LAN).
     _admin_key = str(_config.get_str("app.app_key", "") or "")
     _api_key_raw = _config.get("app.api_key", "")
@@ -363,6 +380,14 @@ async def lifespan(app: FastAPI):
         pass
 
     if is_leader:
+        try:
+            from app.dataplane.reverse.protocol.xai_oidc import (
+                stop_oidc_bg_refresh_worker,
+            )
+
+            stop_oidc_bg_refresh_worker()
+        except Exception as exc:
+            logger.warning("oidc bg refresh worker stop failed: {}", exc)
         scheduler.stop()
         proxy_scheduler.stop()
         _release_scheduler_lock()

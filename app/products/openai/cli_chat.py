@@ -165,11 +165,19 @@ def _cli_prefer_tokens(cfg) -> list[str] | None:
     """CLI account preference list controlled by chat.cli_account_selection.
 
     * warm_prefer (default): restrict to OIDC-warm tokens when any exist.
-    * rotate: no preference — full-pool scoring (recent-use penalty spreads load).
+    * rotate / rotate_warm: no preference — full-pool scoring (spread load).
+      rotate_warm also runs background refresh-only OIDC warm-up (see xai_oidc).
     """
     mode = (cfg.get_str("chat.cli_account_selection", "warm_prefer") or "warm_prefer")
     mode = str(mode).strip().lower().replace("-", "_")
-    if mode in ("rotate", "round_robin", "poll", "uniform", "spread"):
+    if mode in (
+        "rotate",
+        "rotate_warm",
+        "round_robin",
+        "poll",
+        "uniform",
+        "spread",
+    ):
         return None
     return _prefer_warm_tokens()
 

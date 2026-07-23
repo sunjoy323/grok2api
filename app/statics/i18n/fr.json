@@ -401,7 +401,8 @@
         },
         "cliAccountSelection": {
           "warmPrefer": "Warm prefer (default)",
-          "rotate": "Rotate (spread)"
+          "rotate": "Rotate (spread)",
+          "rotateWarm": "Rotate + background warm-up"
         }
       },
       "fields": {
@@ -610,8 +611,8 @@
         },
         "cliAccountSelection": {
           "label": "CLI account selection",
-          "desc": "CLI/grok-4.5 only. Warm prefer: prefer OIDC-ready accounts. Rotate: full-pool spread.",
-          "help": "warm_prefer for mixed OIDC; rotate for large pools and fewer sticky 429s."
+          "desc": "CLI/grok-4.5 only. Warm prefer: OIDC-ready first. Rotate: full-pool spread. Rotate+warm: spread + background refresh-only.",
+          "help": "warm_prefer for mixed OIDC; rotate for large pools; rotate_warm recommended for large pools (spread + paced refresh)."
         },
         "cliAccountRetries": {
           "label": "CLI min account swaps",
@@ -620,6 +621,30 @@
         "cliReasoningEffort": {
           "label": "CLI default reasoning effort",
           "desc": "Default reasoning_effort when the client omits it."
+        },
+        "cliOidcBgRefresh": {
+          "label": "Force OIDC background warm-up",
+          "desc": "Refresh-only (no device convert). Auto-on for rotate_warm."
+        },
+        "cliOidcBgRefreshIntervalSec": {
+          "label": "Warm-up cycle interval (sec)",
+          "desc": "Seconds between refresh cycles; minimum 30."
+        },
+        "cliOidcBgRefreshLeadSec": {
+          "label": "Warm-up lead time (sec)",
+          "desc": "Refresh when access expires within this window; default 3600."
+        },
+        "cliOidcBgRefreshMaxPerCycle": {
+          "label": "Max refreshes per cycle",
+          "desc": "Cap per cycle so large pools do not flood auth."
+        },
+        "cliOidcBgRefreshConcurrency": {
+          "label": "Warm-up concurrency",
+          "desc": "In-batch parallel refreshes; prefer 1–2."
+        },
+        "cliOidcBgRefreshItemDelaySec": {
+          "label": "Warm-up item delay (sec)",
+          "desc": "Per-item delay when concurrency is 1."
         },
         "cliOidcHotConvertLastResort": {
           "label": "Allow hot-path convert when no warm OIDC",

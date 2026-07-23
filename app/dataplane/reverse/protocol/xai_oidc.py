@@ -640,6 +640,7 @@ def convert_oidc_one(sso_token: str) -> tuple[str, str | None]:
                         save_disk_entry(key, refreshed)
                     except Exception as exc:
                         logger.warning("oidc disk save after refresh failed: {}", exc)
+                    _BG_INVALID_GRANT.discard(sso_key(key))
                     return "ok", None
                 except UpstreamError as exc:
                     detail = f"{exc} {(exc.details or {}).get('body', '')}"
@@ -658,6 +659,8 @@ def convert_oidc_one(sso_token: str) -> tuple[str, str | None]:
                 save_disk_entry(key, cred)
             except Exception as exc:
                 logger.warning("oidc disk save after convert failed: {}", exc)
+            # Successful convert (or refresh above) revives bg-refresh eligibility.
+            _BG_INVALID_GRANT.discard(sso_key(key))
             return "ok", None
         except UpstreamError as exc:
             msg = str(exc)
@@ -856,6 +859,344 @@ def cache_get(sso_token: str) -> dict[str, Any] | None:
     return _OIDC_CACHE.get(_normalize_sso(sso_token))
 
 
+# ---------------------------------------------------------------------------
+# Background refresh-only warm-up (rotate_warm / opt-in)
+# ---------------------------------------------------------------------------
+
+_BG_REFRESH_THREAD: threading.Thread | None = None
+_BG_REFRESH_STOP = threading.Event()
+_BG_REFRESH_GUARD = threading.Lock()
+_BG_REFRESH_CURSOR = 0
+_BG_INVALID_GRANT: set[str] = set()  # sk → skip until convert succeeds
+_BG_STATS = {
+    "cycles": 0,
+    "refreshed": 0,
+    "skipped_fresh": 0,
+    "skipped_no_refresh": 0,
+    "failed": 0,
+    "rate_limited": 0,
+    "invalid_grant": 0,
+}
+
+
+def _bg_refresh_enabled(cfg: Any) -> bool:
+    """True when selection is rotate_warm, or cli_oidc_bg_refresh is forced on."""
+    try:
+        if cfg.get_bool("chat.cli_oidc_bg_refresh", False):
+            return True
+        mode = (
+            cfg.get_str("chat.cli_account_selection", "warm_prefer") or "warm_prefer"
+        )
+        mode = str(mode).strip().lower().replace("-", "_")
+        return mode in ("rotate_warm", "rotate-warm")
+    except Exception:
+        return False
+
+
+def _bg_refresh_settings(cfg: Any) -> dict[str, float | int]:
+    return {
+        "interval": max(
+            30.0, float(cfg.get_float("chat.cli_oidc_bg_refresh_interval_sec", 120.0))
+        ),
+        "lead": max(
+            300.0, float(cfg.get_float("chat.cli_oidc_bg_refresh_lead_sec", 3600.0))
+        ),
+        "max_per_cycle": max(
+            1, min(int(cfg.get_int("chat.cli_oidc_bg_refresh_max_per_cycle", 64)), 512)
+        ),
+        "concurrency": max(
+            1, min(int(cfg.get_int("chat.cli_oidc_bg_refresh_concurrency", 2)), 8)
+        ),
+        "item_delay": max(
+            0.0, float(cfg.get_float("chat.cli_oidc_bg_refresh_item_delay_sec", 0.25))
+        ),
+    }
+
+
+def _needs_bg_refresh(cred: dict[str, Any], *, lead_s: float, now: float) -> bool:
+    """True when access is missing/expired/near-expiry but refresh_token exists."""
+    if not cred.get("refresh_token"):
+        return False
+    exp = float(cred.get("expires_at") or 0)
+    # Fresh enough (beyond lead window) → skip.
+    if exp > now + lead_s:
+        return False
+    return True
+
+
+def _refresh_one_entry(
+    sk: str,
+    sso: str | None,
+    cred: dict[str, Any],
+    *,
+    lead_s: float = 3600.0,
+) -> str:
+    """Refresh a single disk/memory entry under per-SSO lock.
+
+    Returns status: ok | skipped | failed | rate_limited | invalid_grant.
+    """
+    if sk in _BG_INVALID_GRANT:
+        return "invalid_grant"
+
+    key = _normalize_sso(sso) if sso else ""
+    # Prefer full SSO when known (from reverse map); else use hash-only path.
+    lock_key = key or f"hash:{sk}"
+
+    with _get_key_lock(lock_key if key else sk):
+        # Re-check freshness under lock (another path may have refreshed).
+        live = None
+        if key:
+            live = _OIDC_CACHE.get(key) or _lookup_disk_for_sso(key)
+        if live is None:
+            live = _OIDC_CACHE.get(f"hash:{sk}") or cred
+        if not isinstance(live, dict):
+            return "skipped"
+        now = time.time()
+        if not _needs_bg_refresh(live, lead_s=lead_s, now=now):
+            # Beyond lead window (or no refresh_token) — skip.
+            if key:
+                cache_put(key, live)
+            else:
+                _OIDC_CACHE[f"hash:{sk}"] = live
+                if _is_fresh(live):
+                    _WARM_HASHES.add(sk)
+            return "skipped"
+
+        refresh = live.get("refresh_token") or ""
+        if not refresh:
+            return "skipped"
+
+        try:
+            refreshed = refresh_oidc(live)
+        except UpstreamError as exc:
+            detail = f"{exc} {(exc.details or {}).get('body', '')}"
+            msg = detail.lower()
+            if "invalid_grant" in msg or "revoked" in msg:
+                _BG_INVALID_GRANT.add(sk)
+                if key:
+                    _drop_cred(key)
+                else:
+                    _OIDC_CACHE.pop(f"hash:{sk}", None)
+                    _WARM_HASHES.discard(sk)
+                return "invalid_grant"
+            if "rate_limited" in msg or "slow_down" in msg or "429" in msg:
+                return "rate_limited"
+            return "failed"
+        except Exception:
+            return "failed"
+
+        if key:
+            cache_put(key, refreshed)
+            try:
+                save_disk_entry(key, refreshed)
+            except Exception as exc:
+                logger.warning("oidc bg refresh disk save failed: {}", exc)
+        else:
+            # Hash-only: update memory + disk entry by sk without full SSO.
+            _OIDC_CACHE[f"hash:{sk}"] = refreshed
+            if _is_fresh(refreshed):
+                _WARM_HASHES.add(sk)
+            try:
+                p = _default_disk_path()
+                with _DISK_LOCK:
+                    data = load_disk_cache(p)
+                    entries = data.setdefault("entries", {})
+                    if isinstance(entries, dict):
+                        prev = entries.get(sk) if isinstance(entries.get(sk), dict) else {}
+                        entries[sk] = {
+                            **(prev or {}),
+                            "access_token": refreshed.get("access_token"),
+                            "refresh_token": refreshed.get("refresh_token")
+                            or (prev or {}).get("refresh_token"),
+                            "expires_at": refreshed.get("expires_at"),
+                            "user_id": refreshed.get("user_id")
+                            or (prev or {}).get("user_id"),
+                            "team_id": refreshed.get("team_id")
+                            or (prev or {}).get("team_id"),
+                            "scope": refreshed.get("scope")
+                            or (prev or {}).get("scope"),
+                            "updated_at": time.time(),
+                        }
+                        data["updated_at"] = time.time()
+                        tmp = p.with_suffix(p.suffix + ".tmp")
+                        tmp.write_text(
+                            json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                            encoding="utf-8",
+                        )
+                        tmp.replace(p)
+            except Exception as exc:
+                logger.warning("oidc bg refresh hash disk save failed: {}", exc)
+
+        _BG_INVALID_GRANT.discard(sk)
+        return "ok"
+
+
+def _collect_bg_refresh_candidates(
+    *, lead_s: float, max_n: int, start: int
+) -> tuple[list[tuple[str, str | None, dict[str, Any]]], int]:
+    """Return (candidates, next_cursor) scanned from disk entries in round-robin."""
+    _ensure_disk_loaded()
+    data = load_disk_cache()
+    entries = data.get("entries") or {}
+    if not isinstance(entries, dict) or not entries:
+        return [], 0
+
+    items = list(entries.items())
+    n = len(items)
+    if n == 0:
+        return [], 0
+
+    now = time.time()
+    out: list[tuple[str, str | None, dict[str, Any]]] = []
+    idx = start % n
+    scanned = 0
+    while scanned < n and len(out) < max_n:
+        sk, cred = items[idx]
+        idx = (idx + 1) % n
+        scanned += 1
+        if not isinstance(sk, str) or not isinstance(cred, dict):
+            continue
+        if sk in _BG_INVALID_GRANT:
+            continue
+        if not _needs_bg_refresh(cred, lead_s=lead_s, now=now):
+            continue
+        sso = _HASH_TO_SSO.get(sk)
+        out.append((sk, sso, cred))
+    return out, idx
+
+
+def run_oidc_bg_refresh_cycle(cfg: Any | None = None) -> dict[str, int]:
+    """One paced refresh-only cycle. Safe to call from tests."""
+    global _BG_REFRESH_CURSOR
+
+    if cfg is None:
+        from app.platform.config.snapshot import get_config
+
+        cfg = get_config()
+
+    settings = _bg_refresh_settings(cfg)
+    lead = float(settings["lead"])
+    max_n = int(settings["max_per_cycle"])
+    concurrency = int(settings["concurrency"])
+    item_delay = float(settings["item_delay"])
+
+    candidates, _BG_REFRESH_CURSOR = _collect_bg_refresh_candidates(
+        lead_s=lead, max_n=max_n, start=_BG_REFRESH_CURSOR
+    )
+    stats = {
+        "candidates": len(candidates),
+        "ok": 0,
+        "skipped": 0,
+        "failed": 0,
+        "rate_limited": 0,
+        "invalid_grant": 0,
+    }
+    if not candidates:
+        _BG_STATS["cycles"] += 1
+        return stats
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _one(item: tuple[str, str | None, dict[str, Any]]) -> str:
+        sk, sso, cred = item
+        if item_delay > 0 and concurrency <= 1:
+            time.sleep(item_delay)
+        return _refresh_one_entry(sk, sso, cred, lead_s=lead)
+
+    with ThreadPoolExecutor(
+        max_workers=concurrency, thread_name_prefix="oidc-bg-refresh"
+    ) as pool:
+        futs = [pool.submit(_one, c) for c in candidates]
+        for fut in as_completed(futs):
+            try:
+                status = fut.result()
+            except Exception:
+                status = "failed"
+            if status == "ok":
+                stats["ok"] += 1
+                _BG_STATS["refreshed"] += 1
+            elif status == "skipped":
+                stats["skipped"] += 1
+                _BG_STATS["skipped_fresh"] += 1
+            elif status == "rate_limited":
+                stats["rate_limited"] += 1
+                _BG_STATS["rate_limited"] += 1
+            elif status == "invalid_grant":
+                stats["invalid_grant"] += 1
+                _BG_STATS["invalid_grant"] += 1
+            else:
+                stats["failed"] += 1
+                _BG_STATS["failed"] += 1
+
+    _BG_STATS["cycles"] += 1
+    if stats["ok"] or stats["rate_limited"] or stats["failed"]:
+        logger.info(
+            "oidc bg refresh cycle: candidates={} ok={} skipped={} "
+            "failed={} rate_limited={} invalid_grant={}",
+            stats["candidates"],
+            stats["ok"],
+            stats["skipped"],
+            stats["failed"],
+            stats["rate_limited"],
+            stats["invalid_grant"],
+        )
+    return stats
+
+
+def _bg_refresh_loop() -> None:
+    logger.info("oidc bg refresh worker started")
+    while not _BG_REFRESH_STOP.is_set():
+        try:
+            from app.platform.config.snapshot import get_config
+
+            cfg = get_config()
+            if _bg_refresh_enabled(cfg):
+                cycle = run_oidc_bg_refresh_cycle(cfg)
+                settings = _bg_refresh_settings(cfg)
+                wait = float(settings["interval"])
+                # Mild extra delay only when this cycle hit auth rate limits.
+                if int(cycle.get("rate_limited") or 0) > 0:
+                    wait = max(wait, 60.0)
+            else:
+                wait = 30.0
+        except Exception as exc:
+            logger.warning("oidc bg refresh loop error: {}", exc)
+            wait = 60.0
+        _BG_REFRESH_STOP.wait(wait)
+    logger.info("oidc bg refresh worker stopped")
+
+
+def start_oidc_bg_refresh_worker() -> bool:
+    """Start daemon thread for refresh-only warm-up. Idempotent."""
+    global _BG_REFRESH_THREAD
+    with _BG_REFRESH_GUARD:
+        if _BG_REFRESH_THREAD is not None and _BG_REFRESH_THREAD.is_alive():
+            return False
+        _BG_REFRESH_STOP.clear()
+        _BG_REFRESH_THREAD = threading.Thread(
+            target=_bg_refresh_loop,
+            name="oidc-bg-refresh",
+            daemon=True,
+        )
+        _BG_REFRESH_THREAD.start()
+        return True
+
+
+def stop_oidc_bg_refresh_worker(*, join_timeout: float = 5.0) -> None:
+    """Signal the background worker to stop."""
+    global _BG_REFRESH_THREAD
+    _BG_REFRESH_STOP.set()
+    with _BG_REFRESH_GUARD:
+        thr = _BG_REFRESH_THREAD
+        _BG_REFRESH_THREAD = None
+    if thr is not None and thr.is_alive():
+        thr.join(timeout=join_timeout)
+
+
+def oidc_bg_refresh_stats() -> dict[str, Any]:
+    return dict(_BG_STATS)
+
+
 __all__ = [
     "OIDC_ISSUER",
     "GROK_CLI_CLIENT_ID",
@@ -873,4 +1214,8 @@ __all__ = [
     "save_disk_entry",
     "cache_put",
     "cache_get",
+    "run_oidc_bg_refresh_cycle",
+    "start_oidc_bg_refresh_worker",
+    "stop_oidc_bg_refresh_worker",
+    "oidc_bg_refresh_stats",
 ]
